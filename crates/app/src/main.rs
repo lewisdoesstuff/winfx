@@ -3,6 +3,7 @@
 mod assets;
 mod fluent;
 mod params;
+mod spectrum;
 mod state;
 mod system;
 mod ui;
@@ -104,8 +105,10 @@ fn open_main_window(cx: &mut App) {
     }
     let state = cx.global::<AppGlobal>().state.clone();
     let preview = cx.global::<AppGlobal>().preview;
+    // Dev aid: WINFX_OFFSCREEN=1 opens the real app off-screen without focus, for screenshots.
+    let offscreen = preview || std::env::var_os("WINFX_OFFSCREEN").is_some();
     let saved = state.read(cx).config.window;
-    let bounds = if preview {
+    let bounds = if offscreen {
         // Off-screen so screenshots (PrintWindow) don't cover the user's work.
         WindowBounds::Windowed(Bounds { origin: point(px(-4000.), px(80.)), size: size(px(1280.), px(860.)) })
     } else {
@@ -116,7 +119,7 @@ fn open_main_window(cx: &mut App) {
         titlebar: Some(TitlebarOptions { title: Some("WinFX".into()), appears_transparent: true, ..Default::default() }),
         window_background: WindowBackgroundAppearance::MicaBackdrop,
         window_min_size: Some(size(px(960.), px(600.))),
-        focus: !preview,
+        focus: !offscreen,
         ..Default::default()
     };
     let handle = cx.open_window(opts, |window, cx| {
@@ -132,7 +135,7 @@ fn open_main_window(cx: &mut App) {
     match handle {
         Ok(h) => {
             cx.global_mut::<AppGlobal>().window = Some(h);
-            if !preview {
+            if !offscreen {
                 cx.activate(true);
             }
         }

@@ -50,6 +50,8 @@ pub struct Meters {
     pub discontinuities: AtomicU64,
     /// Monitor (headphone) stream ran dry.
     pub monitor_underruns: AtomicU64,
+    /// Gate detector level (linear, sidechain envelope) per chain slot, for calibration.
+    pub det: [AtomicF32; MAX_SLOTS],
     /// Current adaptive safety margin and total buffer target (frames).
     pub margin_frames: AtomicU32,
     pub target_frames: AtomicU32,

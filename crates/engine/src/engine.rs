@@ -160,6 +160,9 @@ pub struct Status {
     /// Estimated mic → headphones latency, in ms.
     pub monitor_latency_ms: f32,
     pub latency_test: LatencyTest,
+    /// Where an audition is playing (the monitor device), or why it can't.
+    pub audition_device: Option<String>,
+    pub audition_error: Option<String>,
 }
 
 /// Measured mic → virtual-mic latency (click injected after capture, timed at
@@ -186,6 +189,7 @@ enum Cmd {
     SetConfig(EngineConfig),
     SetMonitor(MonitorConfig),
     MeasureLatency,
+    Audition(bool),
     Shutdown,
 }
 
@@ -194,6 +198,7 @@ pub struct Engine {
     meters: Arc<Meters>,
     status: Arc<Mutex<Status>>,
     monitor_gain: Arc<AtomicF32>,
+    tap: Arc<crate::tap::Tap>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -214,14 +219,20 @@ impl Engine {
         let status = Arc::new(Mutex::new(Status::default()));
         let monitor_gain = Arc::new(AtomicF32::default());
         monitor_gain.store(db_to_lin(config.monitor.volume_db));
+        let tap = Arc::new(crate::tap::Tap::default());
         let thread = {
-            let ctx = Ctl { meters: meters.clone(), status: status.clone(), monitor_gain: monitor_gain.clone() };
+            let ctx = Ctl {
+                meters: meters.clone(),
+                status: status.clone(),
+                monitor_gain: monitor_gain.clone(),
+                tap: tap.clone(),
+            };
             std::thread::Builder::new()
                 .name("winfx-control".into())
                 .spawn(move || if preview { preview_loop(config, rx, ctx) } else { control_loop(config, rx, ctx) })
                 .expect("spawn control thread")
         };
-        Engine { tx, meters, status, monitor_gain, thread: Some(thread) }
+        Engine { tx, meters, status, monitor_gain, tap, thread: Some(thread) }
     }
 
     /// Update effect parameters/order. Applied without restarting audio.
@@ -244,6 +255,17 @@ impl Engine {
     /// in `Status::latency_test`. Anyone listening to the virtual mic hears the clicks.
     pub fn measure_latency(&self) {
         let _ = self.tx.send(Cmd::MeasureLatency);
+    }
+
+    /// Recorder / scope / A/B controls.
+    pub fn tap(&self) -> &Arc<crate::tap::Tap> {
+        &self.tap
+    }
+
+    /// Loop the recording through the chain into the monitor device (started
+    /// temporarily if the monitor is off). The virtual mic gets silence meanwhile.
+    pub fn set_audition(&self, on: bool) {
+        let _ = self.tx.send(Cmd::Audition(on));
     }
 
     /// Live monitor volume, no restart.
@@ -273,6 +295,7 @@ struct Ctl {
     meters: Arc<Meters>,
     status: Arc<Mutex<Status>>,
     monitor_gain: Arc<AtomicF32>,
+    tap: Arc<crate::tap::Tap>,
 }
 
 struct MonitorRun {
@@ -383,10 +406,12 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     let mut running: Option<Running> = None;
     let mut retry_at = Instant::now();
     let mut monitor_retry_at: Option<Instant> = None;
+    // A monitor started only for an audition, to stop when it ends.
+    let mut temp_monitor = false;
 
     loop {
         if running.is_none() && Instant::now() >= retry_at {
-            match start(&config, &ctl.meters) {
+            match start(&config, &ctl.meters, &ctl.tap) {
                 Ok((r, input, output)) => {
                     let target =
                         stream::target_frames(input.period_frames, output.period_frames, r.safety_frames);
@@ -399,6 +424,10 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                     s.output = Some(output);
                     s.last_error = None;
                     ctl.meters.reset_counters();
+                    // A fresh session has no audition monitor.
+                    ctl.tap.set_auditioning(false);
+                    temp_monitor = false;
+                    s.audition_device = None;
                     running = Some(r);
                     monitor_retry_at = config.monitor.enabled.then(Instant::now);
                 }
@@ -484,6 +513,42 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                 s.monitor_error = None;
                 monitor_retry_at = config.monitor.enabled.then(Instant::now);
             }
+            Ok(Cmd::Audition(on)) => {
+                ctl.tap.set_auditioning(on);
+                let mut s = ctl.status.lock().unwrap();
+                s.audition_error = None;
+                if !on {
+                    s.audition_device = None;
+                    if temp_monitor {
+                        if let Some(r) = &mut running {
+                            r.stop_monitor();
+                        }
+                        temp_monitor = false;
+                    }
+                } else if let Some(r) = &mut running {
+                    if r.monitor.is_some() {
+                        s.audition_device = s.monitor.as_ref().map(|m| m.name.clone());
+                    } else {
+                        drop(s);
+                        let cfg = MonitorConfig { enabled: true, ..config.monitor.clone() };
+                        let res = r.start_monitor(&cfg, &ctl);
+                        let mut s = ctl.status.lock().unwrap();
+                        match res {
+                            Ok(info) => {
+                                s.audition_device = Some(info.name);
+                                temp_monitor = true;
+                            }
+                            Err(e) => {
+                                s.audition_error = Some(e.0);
+                                ctl.tap.set_auditioning(false);
+                            }
+                        }
+                    }
+                } else {
+                    s.audition_error = Some("audio isn't running".into());
+                    ctl.tap.set_auditioning(false);
+                }
+            }
             Ok(Cmd::MeasureLatency) => {
                 let mut s = ctl.status.lock().unwrap();
                 match &running {
@@ -548,6 +613,9 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                 ctl.status.lock().unwrap().latency_test =
                     LatencyTest::Failed("not available in preview mode".into());
             }
+            Ok(Cmd::Audition(_)) => {
+                ctl.status.lock().unwrap().audition_error = Some("not available in preview mode".into());
+            }
             Ok(Cmd::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -578,7 +646,11 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     ctl.status.lock().unwrap().state = RunState::Stopped;
 }
 
-fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, StreamInfo, StreamInfo)> {
+fn start(
+    config: &EngineConfig,
+    meters: &Arc<Meters>,
+    tap: &Arc<crate::tap::Tap>,
+) -> Result<(Running, StreamInfo, StreamInfo)> {
     // Resolve the input up front so we can refuse to record our own output:
     // with CABLE Output as the input, the chain would feed back into itself.
     let input = match &config.input {
@@ -625,6 +697,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         monitor_trash: monitor_trash_tx,
         meters: meters.clone(),
         session: session.clone(),
+        tap: tap.clone(),
     };
     let ren = RenderArgs {
         device_id: output_id,

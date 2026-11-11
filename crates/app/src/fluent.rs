@@ -22,6 +22,9 @@ pub mod g {
     pub const CHEVRON_DOWN: char = '\u{E70D}';
     pub const CHEVRON_UP: char = '\u{E70E}';
     pub const IMPORT: char = '\u{E8B5}';
+    pub const PLAY: char = '\u{E768}';
+    pub const STOP: char = '\u{E71A}';
+    pub const RECORD: char = '\u{E7C8}';
     pub const SAVE: char = '\u{E74E}';
     pub const MIC: char = '\u{E720}';
     pub const HEADPHONE: char = '\u{E7F6}';

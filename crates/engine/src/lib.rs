@@ -11,6 +11,7 @@ mod engine;
 pub mod import;
 pub mod meters;
 pub mod resample;
+pub mod tap;
 mod stream;
 
 pub use chain::{Chain, ChainConfig, EffectConfig, EffectSlot};

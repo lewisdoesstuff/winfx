@@ -52,8 +52,37 @@ pub struct MainView {
     popover_closed_at: Instant,
     device_snapshot: (Vec<String>, Vec<String>),
     last_device_poll: Instant,
+    /// Spectrum behind the EQ curve.
+    analyzer: crate::spectrum::Analyzer,
+    /// A/B: hear the original. Level-match from running loudness of both.
+    ab_original: bool,
+    ab_in_ms: f32,
+    ab_out_ms: f32,
+    /// Gate auto-calibration in progress / last result (slot id, message, ok).
+    calib: Option<Calib>,
+    calib_result: Option<(u32, String, bool)>,
     _ticker: Task<()>,
     _subs: Vec<Subscription>,
+}
+
+/// Gate calibration: listen to the gate's detector during silence, then speech.
+struct Calib {
+    slot: u32,
+    talking: bool,
+    until: Instant,
+    quiet: Vec<f32>,
+    talk: Vec<f32>,
+}
+
+const CALIB_QUIET: Duration = Duration::from_secs(4);
+const CALIB_TALK: Duration = Duration::from_secs(5);
+
+fn percentile(v: &mut [f32], q: f32) -> f32 {
+    if v.is_empty() {
+        return -90.0;
+    }
+    v.sort_by(f32::total_cmp);
+    v[((v.len() - 1) as f32 * q).round() as usize]
 }
 
 struct Card {
@@ -260,6 +289,12 @@ impl MainView {
             popover_closed_at: Instant::now(),
             device_snapshot,
             last_device_poll: Instant::now(),
+            analyzer: crate::spectrum::Analyzer::default(),
+            ab_original: false,
+            ab_in_ms: 0.0,
+            ab_out_ms: 0.0,
+            calib: None,
+            calib_result: None,
             _ticker: ticker,
             _subs: subs,
         };
@@ -617,6 +652,47 @@ impl MainView {
             *gr = if v > *gr { v } else { *gr + (v - *gr) * (dt * 6.0).min(1.0) };
         }
         self.status = status;
+
+        // Spectrum: only while an EQ (or filter) card is open.
+        let eq_open = self.cards.iter().any(|c| c.expanded && Some(c.id) == self.eq.slot);
+        let tap = self.state.read(cx).engine.tap().clone();
+        if eq_open {
+            self.analyzer.update(&tap, dt);
+        }
+
+        // A/B level match: running mean-square of input and output while auditioning.
+        if tap.is_auditioning() && !self.ab_original {
+            let a = (dt * 0.5).min(1.0);
+            let (i, o) = (engine::dsp::db_to_lin(l.in_rms), engine::dsp::db_to_lin(l.out_rms));
+            self.ab_in_ms += (i * i - self.ab_in_ms) * a;
+            self.ab_out_ms += (o * o - self.ab_out_ms) * a;
+        }
+        if self.ab_original {
+            let gain = if self.ab_in_ms > 1e-10 { (self.ab_out_ms / self.ab_in_ms).sqrt().clamp(0.1, 10.0) } else { 1.0 };
+            tap.set_original(true, gain);
+        }
+
+        // Gate calibration.
+        if let Some(c) = &mut self.calib {
+            let chain = self.state.read(cx).chain().clone();
+            match chain.slots.iter().position(|s| s.id == c.slot) {
+                None => self.calib = None,
+                Some(ix) => {
+                    let v = lin_to_db(meters.det[ix].take()).max(-90.0);
+                    if c.talking { c.talk.push(v) } else { c.quiet.push(v) }
+                    if Instant::now() >= c.until {
+                        if !c.talking {
+                            c.talking = true;
+                            c.until = Instant::now() + CALIB_TALK;
+                        } else {
+                            let c = self.calib.take().unwrap();
+                            self.finish_calibration(c, window, cx);
+                        }
+                    }
+                }
+            }
+        }
+
         self.state.update(cx, |s, _| s.save_if_dirty());
         if self.last_device_poll.elapsed() > Duration::from_secs(3) {
             self.last_device_poll = Instant::now();
@@ -685,6 +761,85 @@ impl MainView {
                 s.save_preset(&name);
             }
         });
+    }
+
+    // ---------- audition ----------
+
+    fn toggle_record(&mut self, cx: &mut Context<Self>) {
+        let (engine_tap, auditioning) = {
+            let s = self.state.read(cx);
+            (s.engine.tap().clone(), s.engine.tap().is_auditioning())
+        };
+        if engine_tap.is_recording() {
+            engine_tap.stop_recording();
+        } else {
+            if auditioning {
+                self.set_audition(false, cx);
+            }
+            engine_tap.start_recording();
+        }
+        cx.notify();
+    }
+
+    fn set_audition(&mut self, on: bool, cx: &mut Context<Self>) {
+        if !on {
+            self.set_ab(false, cx);
+        }
+        self.ab_in_ms = 0.0;
+        self.ab_out_ms = 0.0;
+        self.state.read(cx).engine.set_audition(on);
+        cx.notify();
+    }
+
+    fn set_ab(&mut self, original: bool, cx: &mut Context<Self>) {
+        self.ab_original = original;
+        if !original {
+            self.state.read(cx).engine.tap().set_original(false, 1.0);
+        }
+        cx.notify();
+    }
+
+    // ---------- gate calibration ----------
+
+    fn start_calibration(&mut self, slot: u32, cx: &mut Context<Self>) {
+        self.calib_result = None;
+        self.calib = Some(Calib { slot, talking: false, until: Instant::now() + CALIB_QUIET, quiet: vec![], talk: vec![] });
+        cx.notify();
+    }
+
+    fn finish_calibration(&mut self, mut c: Calib, window: &mut Window, cx: &mut Context<Self>) {
+        let noise = percentile(&mut c.quiet, 0.95);
+        // Speech: the louder half of what was heard while talking (skips pauses).
+        let voice = percentile(&mut c.talk, 0.75);
+        let threshold = ((noise + 6.0).clamp(-80.0, -20.0) * 2.0).round() / 2.0;
+        let gap = voice - threshold;
+        let id = c.slot;
+        self.edit_chain(cx, |chain| {
+            if let Some(EffectSlot { effect: EffectConfig::Gate(g), .. }) = chain.slots.iter_mut().find(|s| s.id == id) {
+                g.threshold_db = threshold;
+            }
+        });
+        if let Some(card) = self.cards.iter().find(|c| c.id == id) {
+            for ctl in &card.params {
+                if ctl.spec.key == ParamKey::Threshold {
+                    ctl.slider.update(cx, |s, cx| s.set_value(threshold, window, cx));
+                }
+            }
+        }
+        let f = |v: f32| format!("{v:.0} dB").replace('-', "−");
+        let (msg, ok) = if gap >= 10.0 {
+            (format!("Room noise {} · your voice {} → threshold set to {}.", f(noise), f(voice), f(threshold)), true)
+        } else {
+            (
+                format!(
+                    "Threshold set to {}, but your voice ({}) is only {:.0} dB above the room noise ({}). Raise the EVO's input gain or get closer to the mic, then calibrate again.",
+                    f(threshold), f(voice), gap.max(0.0), f(noise)
+                ),
+                false,
+            )
+        };
+        self.calib_result = Some((id, msg, ok));
+        cx.notify();
     }
 
     fn close_popovers(&mut self, cx: &mut Context<Self>) {
@@ -782,6 +937,150 @@ fn transfer_curve(c: &engine::dsp::CompressorParams, cx: &App) -> impl IntoEleme
 }
 
 impl MainView {
+    fn render_audition(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let p = fl(cx).clone();
+        let (tap, audition_device, audition_error) = {
+            let s = self.state.read(cx);
+            (s.engine.tap().clone(), self.status.audition_device.clone(), self.status.audition_error.clone())
+        };
+        let recording = tap.is_recording();
+        let playing = tap.is_auditioning();
+        let has = tap.has_recording();
+        let secs = tap.recorded_seconds();
+        let caption = if recording {
+            format!("Recording… {secs:.1} s (up to {} s). Talk like you would in a call.", engine::tap::REC_SECONDS)
+        } else if playing {
+            format!(
+                "Looping {secs:.1} s through the chain on {} · the virtual mic is silent meanwhile",
+                audition_device.unwrap_or_else(|| "your headphones".into())
+            )
+        } else if let Some(e) = audition_error {
+            format!("Couldn’t play: {e}")
+        } else if has {
+            format!("{secs:.1} s recorded. Play it, then tweak the chain while it loops.")
+        } else {
+            "Record a few seconds of your voice, then loop it through the chain while you tune it.".into()
+        };
+
+        let segment = |id: &'static str, label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .h(px(28.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .when(active, |d| d.bg(p.accent).text_color(p.on_accent))
+                .when(!active, |d| d.text_color(p.text).hover(|s| s.bg(p.subtle_hover)))
+                .child(label)
+        };
+
+        fluent::card(cx)
+            .px(px(16.))
+            .py(px(12.))
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.))
+            .child(
+                div()
+                    .size(px(36.))
+                    .rounded(px(6.))
+                    .bg(p.icon_bg)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(p.accent_text)
+                    .child(fluent::glyph(g::HEADPHONE, 18.)),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_w(px(220.))
+                    .child("Audition")
+                    .child(div().text_xs().line_height(px(16.)).text_color(if recording { p.critical } else { p.text2 }).child(caption)),
+            )
+            .child(
+                fluent::button("rec", cx)
+                    .when(recording, |b| b.text_color(p.critical))
+                    .child(fluent::glyph(if recording { g::STOP } else { g::RECORD }, 12.))
+                    .child(if recording { "Stop" } else if has { "Re-record" } else { "Record" })
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_record(cx))),
+            )
+            .child(
+                fluent::button("play", cx)
+                    .when(!has || recording, |b| b.opacity(0.5))
+                    .child(fluent::glyph(if playing { g::STOP } else { g::PLAY }, 12.))
+                    .child(if playing { "Stop" } else { "Play" })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if has && !recording {
+                            this.set_audition(!playing, cx);
+                        }
+                    })),
+            )
+            .child(
+                div()
+                    .flex()
+                    .p(px(2.))
+                    .gap(px(2.))
+                    .rounded(px(6.))
+                    .border_1()
+                    .border_color(p.control_stroke)
+                    .when(!playing, |d| d.opacity(0.5))
+                    .child(segment("ab-a", "Processed", !self.ab_original).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_ab(false, cx))))
+                    .child(
+                        segment("ab-b", "Original", self.ab_original)
+                            .tooltip(|w, cx| {
+                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, level-matched to the processed sound so loudness doesn’t bias the comparison").build(w, cx)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if playing {
+                                    this.set_ab(true, cx);
+                                }
+                            })),
+                    ),
+            )
+    }
+
+    fn render_calibration(&self, slot_id: u32, cx: &mut Context<Self>) -> AnyElement {
+        let p = fl(cx).clone();
+        let busy = self.calib.as_ref().filter(|c| c.slot == slot_id);
+        let (text, color) = match (busy, &self.calib_result) {
+            (Some(c), _) => {
+                let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32().ceil();
+                if c.talking {
+                    (format!("Now talk normally… {left:.0}"), p.accent_text)
+                } else {
+                    (format!("Stay quiet — measuring room noise… {left:.0}"), p.accent_text)
+                }
+            }
+            (None, Some((id, msg, ok))) if *id == slot_id => (msg.clone(), if *ok { p.success } else { p.caution }),
+            _ => ("Measure your room’s noise and your voice to set the threshold automatically.".to_string(), p.text2),
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .mb(px(8.))
+            .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
+            .child(
+                fluent::button(("calibrate", slot_id as usize), cx)
+                    .when(busy.is_some(), |b| b.opacity(0.5))
+                    .child(if busy.is_some() { "Calibrating…" } else { "Auto-set threshold" })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        if this.calib.is_none() {
+                            this.start_calibration(slot_id, cx);
+                        }
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_title_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let p = fl(cx);
         let preview = self.state.read(cx).preview;
@@ -1305,6 +1604,9 @@ impl MainView {
             })
             .collect();
         let (grid, zero, line, fill_c, bg) = (p.grid, p.zero, p.accent, p.accent_fill, p.graph_bg);
+        let spectrum = self.analyzer.db.clone();
+        let spec_fill = p.text3.opacity(0.14);
+        let spec_line = p.text3.opacity(0.35);
         let bounds_cell = self.eq.bounds.clone();
         let handles = self.eq_handles(cx);
         let sel = self.eq.band;
@@ -1335,6 +1637,26 @@ impl MainView {
                                 Bounds { origin: point(b.origin.x, y), size: size(b.size.width, px(1.)) },
                                 if d == 0.0 { zero } else { grid },
                             ));
+                        }
+                        // Spectrum: −96…0 dBFS over the full height, behind everything else.
+                        let spec_y = |db: f32| b.origin.y + px(h * (db / crate::spectrum::FLOOR_DB).clamp(0.0, 1.0));
+                        let col_x = |i: usize| b.origin.x + px(i as f32 / (crate::spectrum::COLUMNS - 1) as f32 * w);
+                        let mut sp = PathBuilder::fill();
+                        sp.move_to(point(b.origin.x, b.origin.y + b.size.height));
+                        for (i, db) in spectrum.iter().enumerate() {
+                            sp.line_to(point(col_x(i), spec_y(*db)));
+                        }
+                        sp.line_to(point(b.origin.x + b.size.width, b.origin.y + b.size.height));
+                        sp.close();
+                        if let Ok(path) = sp.build() {
+                            window.paint_path(path, spec_fill);
+                        }
+                        let mut sl = PathBuilder::stroke(px(1.));
+                        for (i, db) in spectrum.iter().enumerate() {
+                            if i == 0 { sl.move_to(point(col_x(i), spec_y(*db))) } else { sl.line_to(point(col_x(i), spec_y(*db))) }
+                        }
+                        if let Ok(path) = sl.build() {
+                            window.paint_path(path, spec_line);
                         }
                         let pt = |i: usize, db: f32| point(b.origin.x + px(i as f32 / (N - 1) as f32 * w), b.origin.y + px(eq_y(db, h)));
                         let mut area = PathBuilder::fill();
@@ -1643,6 +1965,7 @@ impl MainView {
             );
 
         let body: Option<AnyElement> = card.expanded.then(|| {
+            let gate_tools = matches!(slot.effect, EffectConfig::Gate(_)).then(|| self.render_calibration(id, cx));
             let content = match &slot.effect {
                 EffectConfig::Eq(_) => self.render_eq(slot, chain, cx).into_any_element(),
                 other => div()
@@ -1678,6 +2001,7 @@ impl MainView {
                 .flex()
                 .flex_col()
                 .gap(px(8.))
+                .children(gate_tools)
                 .child(content)
                 .child(
                     div().flex().justify_end().child(
@@ -1741,6 +2065,7 @@ impl Render for MainView {
         let sidebar = self.render_sidebar(cx).into_any_element();
         let header = self.render_header(cx).into_any_element();
         let notices = self.render_notices(cx);
+        let audition = self.render_audition(cx).into_any_element();
         let cards: Vec<AnyElement> = self
             .cards
             .iter()
@@ -1791,6 +2116,7 @@ impl Render for MainView {
                                         .pb(px(24.))
                                         .child(header)
                                         .children(notices)
+                                        .child(audition)
                                         .children(cards)
                                         .when(empty, |d| {
                                             d.child(

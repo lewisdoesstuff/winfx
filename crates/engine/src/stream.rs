@@ -302,6 +302,7 @@ pub(crate) struct CaptureArgs {
     pub monitor_trash: Producer<Producer<f32>>,
     pub meters: Arc<Meters>,
     pub session: Arc<Session>,
+    pub tap: Arc<crate::tap::Tap>,
 }
 
 pub(crate) fn capture_thread(a: CaptureArgs, ready: Ready) {
@@ -342,6 +343,10 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
     };
     let mut bytes = vec![0u8; buf_frames * block_align];
     let mut mono = vec![0f32; buf_frames];
+    let mut dry = vec![0f32; buf_frames];
+    // A/B crossfade toward the original (0 = processed, 1 = original).
+    let mut ab = 0.0f32;
+    let ab_c = crate::dsp::time_coeff(5.0, SAMPLE_RATE as f32);
 
     a.session.cap_period.store(op.period_frames, Relaxed);
     ready(op.info.clone());
@@ -399,10 +404,26 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
                 };
             }
 
+            // Tuning tools: record the raw mic; while auditioning, the recording replaces it.
+            let auditioning = a.tap.input(block);
+
             let (peak, rms) = block_levels(block);
             a.meters.in_peak.raise(peak);
             a.meters.in_rms.raise(rms);
+            dry[..n].copy_from_slice(block);
             a.chain.process(block, &a.meters);
+
+            // A/B: crossfade to the (level-matched) original.
+            let (ab_target, dry_gain) = match a.tap.original_gain() {
+                Some(g) => (1.0, g),
+                None => (0.0, 1.0),
+            };
+            if ab > 1e-4 || ab_target > 0.0 {
+                for (x, d) in block.iter_mut().zip(&dry[..n]) {
+                    ab = ab * ab_c + ab_target * (1.0 - ab_c);
+                    *x += (d * dry_gain - *x) * ab;
+                }
+            }
 
             if a.session.inject_request.swap(false, Relaxed) {
                 mute_before = SAMPLE_RATE as usize * 150 / 1000;
@@ -426,12 +447,19 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
                 }
             }
 
+            a.tap.scope_write(block);
+
             let free = a.ring.slots();
             if free < n {
                 a.meters.overflows.fetch_add(1, Relaxed);
             }
             if let Ok(chunk) = a.ring.write_chunk_uninit(n.min(free)) {
-                chunk.fill_from_iter(block.iter().copied());
+                if auditioning {
+                    // Nobody on a call should hear the audition loop.
+                    chunk.fill_from_iter(std::iter::repeat(0.0));
+                } else {
+                    chunk.fill_from_iter(block.iter().copied());
+                }
             }
             if let Some(m) = &mut monitor {
                 let k = n.min(m.slots());

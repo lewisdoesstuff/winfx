@@ -362,6 +362,9 @@ impl Chain {
             if i < MAX_SLOTS {
                 let gr = if slot.bypass { 0.0 } else { slot.proc.reduction_db() };
                 meters.gr[i].raise(gr);
+                if let Proc::Gate(g) = &slot.proc {
+                    meters.det[i].raise(g.detector_level());
+                }
             }
         }
         let (peak, rms) = block_levels(buf);

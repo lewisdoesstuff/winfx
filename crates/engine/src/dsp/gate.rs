@@ -98,6 +98,11 @@ impl Gate {
         -lin_to_db(self.gain)
     }
 
+    /// The detector envelope (linear) that's compared against the thresholds.
+    pub fn detector_level(&self) -> f32 {
+        self.env
+    }
+
     pub fn is_open(&self) -> bool {
         self.open
     }
