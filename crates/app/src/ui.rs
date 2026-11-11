@@ -61,11 +61,25 @@ pub struct MainView {
     /// Gate auto-calibration in progress / last result (slot id, message, ok).
     calib: Option<Calib>,
     calib_result: Option<(u32, String, bool)>,
+    /// Whole-chain mic calibration (trim + expander/gate thresholds).
+    mic_calib: Option<MicCalib>,
+    mic_calib_result: Option<(String, bool)>,
     _ticker: Task<()>,
     _subs: Vec<Subscription>,
 }
 
 /// Gate calibration: listen to the gate's detector during silence, then speech.
+/// Mic calibration listens to the raw input (before the chain).
+struct MicCalib {
+    talking: bool,
+    until: Instant,
+    quiet: Vec<f32>,
+    talk: Vec<f32>,
+}
+
+/// Where calibrated speech should sit after the trim (dBFS RMS, 50 ms windows).
+const SPEECH_TARGET_DB: f32 = -20.0;
+
 struct Calib {
     slot: u32,
     talking: bool,
@@ -76,6 +90,10 @@ struct Calib {
 
 const CALIB_QUIET: Duration = Duration::from_secs(4);
 const CALIB_TALK: Duration = Duration::from_secs(5);
+
+fn fmt_db(v: f32) -> String {
+    format!("{v:.0} dB").replace('-', "−")
+}
 
 fn percentile(v: &mut [f32], q: f32) -> f32 {
     if v.is_empty() {
@@ -297,6 +315,8 @@ impl MainView {
             ab_out_ms: 0.0,
             calib: None,
             calib_result: None,
+            mic_calib: None,
+            mic_calib_result: None,
             _ticker: ticker,
             _subs: subs,
         };
@@ -647,7 +667,8 @@ impl MainView {
         l.in_peak = db(meters.in_peak.take()).max(l.in_peak - fall);
         l.out_peak = db(meters.out_peak.take()).max(l.out_peak - fall);
         let smooth = |old: f32, new: f32| if new > old { new } else { old + (new - old) * (dt * 8.0).min(1.0) };
-        l.in_rms = smooth(l.in_rms, db(meters.in_rms.take()));
+        let in_rms_now = db(meters.in_rms.take());
+        l.in_rms = smooth(l.in_rms, in_rms_now);
         l.out_rms = smooth(l.out_rms, db(meters.out_rms.take()));
         for (i, a) in l.aux.iter_mut().enumerate() {
             *a = meters.aux[i].load();
@@ -675,6 +696,20 @@ impl MainView {
         if self.ab_original {
             let gain = if self.ab_in_ms > 1e-10 { (self.ab_out_ms / self.ab_in_ms).sqrt().clamp(0.1, 10.0) } else { 1.0 };
             tap.set_original(true, gain);
+        }
+
+        // Mic calibration.
+        if let Some(c) = &mut self.mic_calib {
+            if c.talking { c.talk.push(in_rms_now) } else { c.quiet.push(in_rms_now) }
+            if Instant::now() >= c.until {
+                if !c.talking {
+                    c.talking = true;
+                    c.until = Instant::now() + CALIB_TALK;
+                } else {
+                    let c = self.mic_calib.take().unwrap();
+                    self.finish_mic_calibration(c, window, cx);
+                }
+            }
         }
 
         // Gate calibration.
@@ -864,6 +899,82 @@ impl MainView {
     }
 
     // ---------- gate calibration ----------
+
+    fn start_mic_calibration(&mut self, cx: &mut Context<Self>) {
+        self.mic_calib_result = None;
+        self.mic_calib = Some(MicCalib { talking: false, until: Instant::now() + CALIB_QUIET, quiet: vec![], talk: vec![] });
+        cx.notify();
+    }
+
+    /// Set the chain's trim so speech lands at SPEECH_TARGET_DB, and put the
+    /// expander/gate thresholds between the measured noise and speech.
+    fn finish_mic_calibration(&mut self, mut c: MicCalib, window: &mut Window, cx: &mut Context<Self>) {
+        let noise = percentile(&mut c.quiet, 0.90);
+        let mut voiced: Vec<f32> = c.talk.iter().copied().filter(|v| *v > noise + 10.0).collect();
+        if voiced.len() < 10 {
+            self.mic_calib_result = Some((
+                format!("Couldn’t hear your voice above the room noise ({}). Check the mic and its gain, then try again.", fmt_db(noise)),
+                false,
+            ));
+            cx.notify();
+            return;
+        }
+        let speech = percentile(&mut voiced, 0.75);
+        let trim = ((SPEECH_TARGET_DB - speech).clamp(-12.0, 30.0) * 2.0).round() / 2.0;
+        let (noise_t, speech_t) = (noise + trim, speech + trim);
+        // Thresholds: well clear of the noise, well under the voice.
+        let expander_thr = ((noise_t + 10.0).min(speech_t - 14.0) * 2.0).round() / 2.0;
+        let gate_thr = ((noise_t + 12.0).min(speech_t - 12.0) * 2.0).round() / 2.0;
+
+        let mut touched = vec![];
+        self.edit_chain(cx, |chain| {
+            use engine::EffectConfig as E;
+            // Trim = the first Gain before any dynamics; add one after leading filters if missing.
+            let first_dyn = chain.slots.iter().position(|s| !matches!(s.effect, E::Filter(_) | E::Gain(_))).unwrap_or(chain.slots.len());
+            match chain.slots[..first_dyn].iter_mut().find(|s| matches!(s.effect, E::Gain(_))) {
+                Some(EffectSlot { effect: E::Gain(g), bypass, .. }) => {
+                    g.gain_db = trim;
+                    *bypass = false;
+                }
+                _ => {
+                    let id = chain.next_id();
+                    let at = chain.slots.iter().position(|s| !matches!(s.effect, E::Filter(_))).unwrap_or(chain.slots.len());
+                    chain.slots.insert(at, EffectSlot { id, bypass: false, effect: E::Gain(engine::dsp::GainParams { gain_db: trim }) });
+                }
+            }
+            for slot in &mut chain.slots {
+                match &mut slot.effect {
+                    E::Expander(e) => {
+                        e.threshold_db = expander_thr;
+                        touched.push(format!("expander {}", fmt_db(expander_thr)));
+                    }
+                    E::Gate(g) => {
+                        g.threshold_db = gate_thr;
+                        touched.push(format!("gate {}", fmt_db(gate_thr)));
+                    }
+                    _ => {}
+                }
+            }
+        });
+        self.rebuild_cards(window, cx);
+
+        let gap = speech - noise;
+        let mut msg = format!(
+            "Voice {} · room {} → trim {}{}.",
+            fmt_db(speech),
+            fmt_db(noise),
+            params::format(params::Unit::Db, trim),
+            if touched.is_empty() { String::new() } else { format!(", {}", touched.join(", ")) }
+        );
+        let ok = gap >= 25.0;
+        if !ok {
+            msg.push_str(&format!(
+                " Background noise is only {gap:.0} dB below your voice — open-back headphones leaking, a fan, or the mic too far away? Lower the headphone volume or move closer, then calibrate again."
+            ));
+        }
+        self.mic_calib_result = Some((msg, ok));
+        cx.notify();
+    }
 
     fn start_calibration(&mut self, slot: u32, cx: &mut Context<Self>) {
         self.calib_result = None;
@@ -1342,6 +1453,43 @@ impl MainView {
         let icon_glyph = |ch: char| fluent::glyph(ch, 20.).text_color(p.text).into_any_element();
         let plug = svg().path("winfx/plug.svg").size(px(20.)).flex_none().text_color(p.text).into_any_element();
 
+        let mic_calib_row = {
+            let (text, color) = match (&self.mic_calib, &self.mic_calib_result) {
+                (Some(c), _) => {
+                    let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32().ceil();
+                    if c.talking {
+                        (format!("Now talk normally, at your usual distance… {left:.0}"), p.accent_text)
+                    } else {
+                        (format!("Stay quiet — measuring the room… {left:.0}"), p.accent_text)
+                    }
+                }
+                (None, Some((msg, ok))) => (msg.clone(), if *ok { p.success } else { p.caution }),
+                _ => ("Changed the mic gain? Calibrate so the chain fits your level again.".to_string(), p.text2),
+            };
+            let busy = self.mic_calib.is_some();
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(8.))
+                .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
+                .child(
+                    fluent::button("mic-calibrate", cx)
+                        .when(busy, |b| b.opacity(0.5))
+                        .child(if busy { "Listening…" } else { "Calibrate" })
+                        .tooltip(|w, cx| {
+                            gpui_component::tooltip::Tooltip::new(
+                                "4 s of quiet, then 5 s of talking. Sets the chain's trim so your voice sits at −20 dBFS, and the expander/gate thresholds from your room noise.",
+                            )
+                            .build(w, cx)
+                        })
+                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                            if this.mic_calib.is_none() {
+                                this.start_mic_calibration(cx);
+                            }
+                        })),
+                )
+        };
         let mic_card = fluent::card(cx)
             .p(px(16.))
             .flex()
@@ -1350,6 +1498,7 @@ impl MainView {
             .child(header(icon_glyph(g::MIC), "Microphone", input_caption))
             .child(Select::new(&self.input_sel).placeholder("Choose microphone"))
             .child(fluent::level_meter("Input level", self.levels.in_peak, self.levels.in_rms, cx))
+            .child(mic_calib_row)
             .child(
                 div()
                     .flex()

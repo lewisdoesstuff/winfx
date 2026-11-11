@@ -62,6 +62,10 @@ pub struct Report {
     pub speech_share: f32,
     /// EBU R128 loudness range: spread of 3 s short-term loudness (LU).
     pub lra: f32,
+    /// Octave bands of the pauses (Hz, absolute dBFS per band): what the noise is made of.
+    pub noise_bands: Vec<(f32, f32)>,
+    /// Tonal peaks in the pauses (Hz, dB above the surrounding noise), strongest first.
+    pub noise_tones: Vec<(f32, f32)>,
 }
 
 /// Indices of 50 ms windows that are speech, judged on `reference` (the raw input).
@@ -146,11 +150,24 @@ pub fn analyze(x: &[f32], speech: &[bool]) -> Report {
     let fft = RealFftPlanner::<f32>::new().plan_fft_forward(N);
     let win: Vec<f32> = (0..N).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N as f32).cos()).collect();
     let mut power = vec![0.0f64; N / 2 + 1];
+    let mut npower = vec![0.0f64; N / 2 + 1];
+    let mut nframes = 0;
     let (mut sib, mut presence) = (vec![], vec![]);
     let mut frames = 0;
     let mut start = 0;
     while start + N <= x.len() {
         let mid = (start + N / 2) / WIN;
+        let quiet = (start / WIN..(start + N) / WIN).all(|w| !speech.get(w).copied().unwrap_or(true));
+        if quiet {
+            let mut buf: Vec<f32> = x[start..start + N].iter().zip(&win).map(|(a, b)| a * b).collect();
+            let mut spec = fft.make_output_vec();
+            if fft.process(&mut buf, &mut spec).is_ok() {
+                for (p, c) in npower.iter_mut().zip(&spec) {
+                    *p += c.norm_sqr() as f64;
+                }
+                nframes += 1;
+            }
+        }
         if speech.get(mid).copied().unwrap_or(false) {
             let mut buf: Vec<f32> = x[start..start + N].iter().zip(&win).map(|(a, b)| a * b).collect();
             let mut spec = fft.make_output_vec();
@@ -183,6 +200,20 @@ pub fn analyze(x: &[f32], speech: &[bool]) -> Report {
         vec![]
     };
     let speech_share = speech.iter().filter(|s| **s).count() as f32 / speech.len().max(1) as f32;
+    // Absolute band levels of the pauses, normalised so a full-scale sine reads 0 dBFS.
+    let wsum: f32 = win.iter().sum();
+    let noise_bands = if nframes > 0 {
+        centers
+            .iter()
+            .map(|&fc| {
+                let (lo, hi) = (fc / 2f32.sqrt(), fc * 2f32.sqrt());
+                let e: f64 = npower[(lo / bin_hz) as usize..((hi / bin_hz) as usize).min(npower.len())].iter().sum::<f64>() / nframes as f64;
+                (fc, (10.0 * (e.max(1e-30)).log10() + 20.0 * (2.0 / wsum as f64).log10() - 3.01) as f32)
+            })
+            .collect()
+    } else {
+        vec![]
+    };
     Report {
         lufs: integrated_lufs(x),
         peak_db: lin_to_db(peak),
@@ -193,7 +224,33 @@ pub fn analyze(x: &[f32], speech: &[bool]) -> Report {
         sibilance_p95_db: percentile(&sib, 0.95),
         speech_share,
         lra: loudness_range(x),
+        noise_bands,
+        noise_tones: tones(&npower, bin_hz),
     }
+}
+
+/// Narrow peaks (hum, whine) in a power spectrum: bins ≥ 8 dB above the
+/// median of their ±30-bin neighbourhood, 40 Hz–12 kHz, local maxima only.
+fn tones(power: &[f64], bin_hz: f32) -> Vec<(f32, f32)> {
+    let mut out = vec![];
+    let (lo, hi) = ((40.0 / bin_hz) as usize, ((12_000.0 / bin_hz) as usize).min(power.len().saturating_sub(31)));
+    for k in lo.max(31)..hi {
+        if power[k] < power[k - 1] || power[k] < power[k + 1] {
+            continue;
+        }
+        let mut nb: Vec<f64> = power[k - 30..k + 31].to_vec();
+        nb.sort_by(f64::total_cmp);
+        let above = 10.0 * (power[k] / nb[30].max(1e-30)).log10();
+        if above >= 8.0 {
+            // Parabolic interpolation for the exact frequency.
+            let (a, b, c) = (power[k - 1].max(1e-30).ln(), power[k].max(1e-30).ln(), power[k + 1].max(1e-30).ln());
+            let off = 0.5 * (a - c) / (a - 2.0 * b + c);
+            out.push(((k as f64 + off) as f32 * bin_hz, above as f32));
+        }
+    }
+    out.sort_by(|x, y| y.1.total_cmp(&x.1));
+    out.truncate(6);
+    out
 }
 
 /// Mean gain reduction (dB) while talking and in pauses, per slot.

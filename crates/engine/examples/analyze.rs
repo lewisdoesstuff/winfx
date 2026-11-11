@@ -97,6 +97,23 @@ fn main() {
             println!();
         }
     }
+    for (name, r, _) in &reports {
+        if !r.noise_tones.is_empty() {
+            let t: Vec<String> = r.noise_tones.iter().map(|(f, d)| format!("{f:.1} Hz (+{d:.0} dB)")).collect();
+            println!("Tones in pauses [{name}]: {}", t.join(", "));
+        }
+    }
+    println!("Pauses — noise per octave band (dBFS):");
+    if let Some((_, r, _)) = reports.first() {
+        for (i, (hz, _)) in r.noise_bands.iter().enumerate() {
+            let label = if *hz >= 1000.0 { format!("  {:.0}k", hz / 1000.0) } else { format!("  {hz:.0}") };
+            print!("{label:<26}");
+            for (_, r, _) in &reports {
+                print!("{:>w$}", r.noise_bands.get(i).map(|b| format!("{:.1}", b.1)).unwrap_or_default());
+            }
+            println!();
+        }
+    }
     println!("\nGain reduction (dB) — talking / pauses / max:");
     for (name, _, gr) in &reports {
         for (fx, g) in gr {
