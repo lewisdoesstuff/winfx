@@ -620,6 +620,8 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
     op.client.start_stream()?;
 
     let mut results = vec![];
+    // Anything but exact zeros at all? (A misconfigured cable delivers pure silence.)
+    let mut heard_anything = false;
     for _ in 0..trials {
         session.inject_qpc.store(0, Relaxed);
         session.inject_request.store(true, Relaxed);
@@ -639,6 +641,11 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
                 let (n, info) = cap.read_from_device(&mut bytes)?;
                 if n == 0 {
                     break;
+                }
+                if !heard_anything {
+                    heard_anything = bytes[..n as usize * block_align]
+                        .chunks_exact(4)
+                        .any(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]) != 0.0);
                 }
                 let injected = session.inject_qpc.load(Relaxed);
                 if injected == 0 {
@@ -660,5 +667,9 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
         std::thread::sleep(std::time::Duration::from_millis(250));
     }
     let _ = op.client.stop_stream();
+    if !heard_anything {
+        return Err("the virtual cable isn't passing audio (CABLE Output is pure silence). In VB-Cable's control panel,                     the latency must be larger than a Windows audio period: use 3×256 smp or more"
+            .into());
+    }
     Ok(results)
 }
