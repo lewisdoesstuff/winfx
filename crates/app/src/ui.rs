@@ -887,7 +887,7 @@ impl MainView {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("Load into Audition".into()),
+            prompt: Some("Load".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
             let Ok(Ok(Some(paths))) = rx.await else { return };
@@ -898,7 +898,7 @@ impl MainView {
                 this.import_notice = Some(match engine::wav::read_mono(&path, engine::SAMPLE_RATE as f32, max) {
                     Ok((samples, _)) => {
                         let secs = this.state.read(cx).engine.tap().load_recording(&samples);
-                        (Severity::Success, format!("Loaded {secs:.1} s into Audition."), "Select Play to hear it through the effects.".into())
+                        (Severity::Success, format!("Loaded a {secs:.1} s test clip."), String::new())
                     }
                     Err(e) => (Severity::Error, "Couldn't load that file.".into(), e),
                 });
@@ -1141,10 +1141,8 @@ impl MainView {
             )
         } else if let Some(e) = audition_error {
             format!("Couldn't play the recording. {}", sentence(&e))
-        } else if has {
-            format!("{secs:.1} s recorded")
         } else {
-            "Record a short clip, then loop it through the effects while you adjust them.".into()
+            String::new()
         };
 
         let segment = |id: &'static str, label: &'static str, active: bool| {
@@ -1186,8 +1184,8 @@ impl MainView {
                     .flex_col()
                     .flex_1()
                     .min_w(px(220.))
-                    .child("Audition")
-                    .child(div().text_xs().line_height(px(16.)).text_color(if recording { p.critical } else { p.text2 }).child(caption)),
+                    .child("Test clip")
+                    .when(!caption.is_empty(), |d| d.child(div().text_xs().line_height(px(16.)).text_color(if recording { p.critical } else { p.text2 }).child(caption))),
             )
             .child(
                 fluent::button("rec", cx)
