@@ -1437,11 +1437,8 @@ impl MainView {
         let s = self.state.read(cx);
         let exclusive = s.config.engine.exclusive_input;
         let mon = s.config.engine.monitor.clone();
-        let input_caption = match &self.status.input {
-            Some(i) if i.exclusive => format!("Exclusive, {:.1} ms period", i.period_frames as f32 / 48.0),
-            Some(i) => format!("Shared, {:.1} ms period", i.period_frames as f32 / 48.0),
-            None => "Not connected".into(),
-        };
+        // Device captions only appear when something is wrong.
+        let input_caption = if self.status.input.is_some() { String::new() } else { "Not connected".into() };
         let header = |icon: AnyElement, title: &str, sub: String| {
             div()
                 .flex()
@@ -1456,7 +1453,7 @@ impl MainView {
                         .flex_1()
                         .min_w_0()
                         .child(title.to_owned())
-                        .child(div().text_xs().line_height(px(16.)).text_color(p.text2).child(sub)),
+                        .when(!sub.is_empty(), |d| d.child(div().text_xs().line_height(px(16.)).text_color(p.text2).child(sub))),
                 )
         };
         let icon_glyph = |ch: char| fluent::glyph(ch, 20.).text_color(p.text).into_any_element();
@@ -1521,11 +1518,7 @@ impl MainView {
             );
 
         let exclusive_out = s.config.engine.exclusive_output;
-        let output_caption = match &self.status.output {
-            Some(o) if o.exclusive => format!("Exclusive, {:.1} ms period", o.period_frames as f32 / 48.0),
-            Some(o) => format!("Shared, {:.1} ms period", o.period_frames as f32 / 48.0),
-            None => "Not connected".into(),
-        };
+        let output_caption = if self.status.output.is_some() { String::new() } else { "Not connected".into() };
         let measuring = self.status.latency_test == engine::LatencyTest::Running;
         let margin_ms = s.engine.meters().margin_frames.load(Relaxed) as f32 / 48.0;
         let (latency_line, latency_detail, latency_detail_color) = match &self.status.latency_test {
@@ -1606,10 +1599,8 @@ impl MainView {
             );
 
         let mon_caption = match (&self.status.monitor, &self.status.monitor_error) {
-            _ if !mon.enabled => "Listen to the processed signal".to_string(),
-            (Some(_), _) => format!("~{:.0} ms latency", self.status.monitor_latency_ms),
-            (None, Some(e)) => sentence(e),
-            _ => "Starting...".into(),
+            (None, Some(e)) if mon.enabled => sentence(e),
+            _ => String::new(),
         };
         let monitor_card = fluent::card(cx)
             .p(px(16.))
@@ -1657,8 +1648,7 @@ impl MainView {
                         .flex()
                         .flex_col()
                         .flex_1()
-                        .child("Start at login")
-                        .child(fluent::caption("Runs in the notification area", cx)),
+                        .child("Start at login"),
                 )
                 .child(fluent::switch("autostart", self.autostart, "", cx, {
                     let view = cx.entity();
