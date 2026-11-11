@@ -12,6 +12,18 @@ pub struct AppConfig {
     pub engine: EngineConfig,
     #[serde(default)]
     pub preset: Option<String>,
+    /// Last window position/size, restored on open.
+    #[serde(default)]
+    pub window: Option<SavedWindow>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct SavedWindow {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub maximized: bool,
 }
 
 pub struct AppState {
@@ -47,7 +59,8 @@ impl AppState {
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok());
         let first_run = saved.is_none();
-        let mut config = saved.unwrap_or(AppConfig { engine: EngineConfig::default(), preset: None });
+        let mut config =
+            saved.unwrap_or(AppConfig { engine: EngineConfig::default(), preset: None, window: None });
 
         let mut s = AppState {
             engine: Engine::start(EngineConfig {

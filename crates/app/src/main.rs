@@ -6,8 +6,8 @@ mod system;
 mod ui;
 
 use gpui::{
-    px, size, App, AppContext as _, Bounds, Entity, Global, QuitMode, TitlebarOptions,
-    WindowBounds, WindowHandle, WindowOptions,
+    point, px, size, App, AppContext as _, Bounds, Entity, Global, QuitMode, TitlebarOptions,
+    Window, WindowBounds, WindowHandle, WindowOptions,
 };
 use gpui_component::{Root, Theme, ThemeMode};
 use state::AppState;
@@ -91,13 +91,19 @@ fn open_main_window(cx: &mut App) {
         }
     }
     let state = cx.global::<AppGlobal>().state.clone();
+    let saved = state.read(cx).config.window;
     let opts = WindowOptions {
-        window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size(px(1180.), px(780.)), cx))),
+        window_bounds: Some(restore_bounds(saved, cx)),
         titlebar: Some(TitlebarOptions { title: Some("WinFX".into()), ..Default::default() }),
         window_min_size: Some(size(px(860.), px(520.))),
         ..Default::default()
     };
     let handle = cx.open_window(opts, |window, cx| {
+        let st = state.clone();
+        window.on_window_should_close(cx, move |window, cx| {
+            remember_bounds(&st, window, cx);
+            true
+        });
         let view = cx.new(|cx| ui::MainView::new(state, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     });
@@ -108,6 +114,33 @@ fn open_main_window(cx: &mut App) {
         }
         Err(e) => eprintln!("failed to open window: {e}"),
     }
+}
+
+/// Saved position if it's still on a connected display, else centred.
+fn restore_bounds(saved: Option<state::SavedWindow>, cx: &App) -> WindowBounds {
+    let default = Bounds::centered(None, size(px(1180.), px(780.)), cx);
+    let Some(s) = saved else { return WindowBounds::Windowed(default) };
+    let b = Bounds { origin: point(px(s.x), px(s.y)), size: size(px(s.w.max(860.)), px(s.h.max(520.))) };
+    if !cx.displays().iter().any(|d| d.bounds().intersects(&b)) {
+        return WindowBounds::Windowed(default);
+    }
+    if s.maximized { WindowBounds::Maximized(b) } else { WindowBounds::Windowed(b) }
+}
+
+fn remember_bounds(state: &Entity<AppState>, window: &Window, cx: &mut App) {
+    let wb = window.window_bounds();
+    let b = wb.get_bounds();
+    let saved = state::SavedWindow {
+        x: f32::from(b.origin.x),
+        y: f32::from(b.origin.y),
+        w: f32::from(b.size.width),
+        h: f32::from(b.size.height),
+        maximized: matches!(wb, WindowBounds::Maximized(_)),
+    };
+    state.update(cx, |s, _| {
+        s.config.window = Some(saved);
+        s.save();
+    });
 }
 
 fn toggle_bypass_all(cx: &mut App) {
@@ -126,6 +159,10 @@ fn toggle_bypass_all(cx: &mut App) {
 
 fn quit(cx: &mut App) {
     let state = cx.global::<AppGlobal>().state.clone();
+    if let Some(h) = cx.global::<AppGlobal>().window {
+        let st = state.clone();
+        let _ = h.update(cx, |_, window, cx| remember_bounds(&st, window, cx));
+    }
     state.update(cx, |s, _| s.save());
     cx.quit();
 }
