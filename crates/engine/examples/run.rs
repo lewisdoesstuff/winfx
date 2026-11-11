@@ -2,7 +2,7 @@
 //!
 //!   cargo run -p engine --example run -- --list
 //!   cargo run -p engine --example run -- [--input <id|name>] [--output <id|name>]
-//!                                        [--channel <n>|mix] [--bypass] [--seconds <n>]
+//!                                        [--channel <n>|mix] [--shared] [--bypass] [--seconds <n>]
 //!
 //! Defaults: Windows default mic → VB-Cable "CABLE Input", SM57 voice chain.
 
@@ -39,6 +39,12 @@ fn main() {
             InputChannel::Channel(c.parse().unwrap_or_else(|_| die("--channel takes a number or 'mix'")))
         };
     }
+    if let Some(ms) = get("--safety").and_then(|s| s.parse().ok()) {
+        config.safety_ms = ms;
+    }
+    if args.iter().any(|a| a == "--shared") {
+        config.exclusive_input = false;
+    }
     if args.iter().any(|a| a == "--bypass") {
         for s in &mut config.chain.slots {
             s.bypass = true;
@@ -70,9 +76,12 @@ fn main() {
                             s.device_rate,
                             s.period_frames,
                             s.period_frames as f32 / 48.0,
-                            if s.low_latency { ", low-latency" } else { "" },
+                            if s.exclusive { ", EXCLUSIVE" } else if s.low_latency { ", low-latency" } else { "" },
                             s.stream_latency_ms
                         );
+                        if let Some(why) = &s.exclusive_fallback {
+                            println!("       exclusive mode failed, using shared: {why}");
+                        }
                     }
                 }
                 other => println!("{other:?}: {}", st.last_error.as_deref().unwrap_or("")),

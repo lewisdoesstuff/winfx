@@ -67,11 +67,19 @@ pub struct EngineConfig {
     /// Extra buffering on top of the device periods, in ms. Raise if you hear dropouts.
     #[serde(default = "default_safety_ms")]
     pub safety_ms: f32,
+    /// Open the mic in exclusive mode for lower latency (falls back to shared).
+    #[serde(default = "yes")]
+    pub exclusive_input: bool,
     pub chain: ChainConfig,
 }
 
+/// 2 ms gave ~2 underruns/min on EVO 4 (exclusive, 3 ms) → VB-Cable; 4 ms gave none.
 fn default_safety_ms() -> f32 {
-    2.0
+    4.0
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Default for EngineConfig {
@@ -81,6 +89,7 @@ impl Default for EngineConfig {
             output: DeviceSel::Default,
             input_channel: InputChannel::default(),
             safety_ms: default_safety_ms(),
+            exclusive_input: true,
             chain: ChainConfig::default(),
         }
     }
@@ -94,8 +103,12 @@ pub struct StreamInfo {
     /// The device's own shared-mode rate (WASAPI converts if ≠ 48 kHz).
     pub device_rate: u32,
     pub period_frames: u32,
-    /// Opened through IAudioClient3 with a reduced engine period.
+    /// Opened through IAudioClient3 with a reduced engine period, or exclusive.
     pub low_latency: bool,
+    /// Opened in exclusive mode (input only).
+    pub exclusive: bool,
+    /// Exclusive mode was requested but failed; this is why (now running shared).
+    pub exclusive_fallback: Option<String>,
     pub stream_latency_ms: f32,
 }
 
@@ -309,6 +322,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
     let cap = CaptureArgs {
         device_id: input_id,
         channel: config.input_channel,
+        exclusive: config.exclusive_input,
         chain: Box::new(Chain::build(&config.chain, SAMPLE_RATE as f32)),
         chain_rx,
         trash_tx,

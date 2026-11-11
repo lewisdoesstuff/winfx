@@ -62,9 +62,103 @@ pub(crate) type Ready = mpsc::Sender<(Side, Result<StreamInfo>)>;
 struct Opened {
     client: AudioClient,
     format: WaveFormat,
+    sample: SampleFmt,
     channels: usize,
     period_frames: u32,
     info: StreamInfo,
+}
+
+/// On-the-wire sample encoding. Shared mode is always F32; exclusive mode
+/// uses whatever the device natively accepts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SampleFmt {
+    F32,
+    I16,
+    I24,
+    /// 32-bit container, left-justified (covers 24-in-32).
+    I32,
+}
+
+impl SampleFmt {
+    fn bytes(self) -> usize {
+        match self {
+            SampleFmt::I16 => 2,
+            SampleFmt::I24 => 3,
+            SampleFmt::F32 | SampleFmt::I32 => 4,
+        }
+    }
+
+    #[inline]
+    fn read(self, b: &[u8]) -> f32 {
+        match self {
+            SampleFmt::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
+            SampleFmt::I16 => i16::from_le_bytes([b[0], b[1]]) as f32 / 32_768.0,
+            SampleFmt::I24 => i32::from_le_bytes([0, b[0], b[1], b[2]]) as f32 / 2_147_483_648.0,
+            SampleFmt::I32 => i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as f32 / 2_147_483_648.0,
+        }
+    }
+}
+
+/// Desired exclusive-mode period. The driver's minimum wins if it's larger.
+const EXCLUSIVE_PERIOD_HNS: i64 = 20_000; // 2 ms
+
+/// Open the mic in exclusive mode at 48 kHz in whatever sample format the
+/// device takes natively. Errors if the device is busy, disallows exclusive
+/// access, or can't do 48 kHz.
+fn open_exclusive_capture(device: &Device) -> Result<Opened> {
+    use windows::Win32::Media::Audio::AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED;
+
+    let id = device.get_id()?;
+    let name = device.get_friendlyname().unwrap_or_default();
+    let mut client = device.get_iaudioclient()?;
+    let channels = device
+        .get_device_format()
+        .map(|f| f.get_nchannels() as usize)
+        .or_else(|_| client.get_mixformat().map(|f| f.get_nchannels() as usize))?;
+
+    let sr = SAMPLE_RATE as usize;
+    let candidates = [
+        (SampleFmt::I32, WaveFormat::new(32, 24, SampleType::Int, sr, channels, None)),
+        (SampleFmt::I24, WaveFormat::new(24, 24, SampleType::Int, sr, channels, None)),
+        (SampleFmt::F32, WaveFormat::new(32, 32, SampleType::Float, sr, channels, None)),
+        (SampleFmt::I32, WaveFormat::new(32, 32, SampleType::Int, sr, channels, None)),
+        (SampleFmt::I16, WaveFormat::new(16, 16, SampleType::Int, sr, channels, None)),
+    ];
+    let (sample, format) = candidates
+        .iter()
+        .find_map(|(s, f)| client.is_supported_exclusive_with_quirks(f).ok().map(|f| (*s, f)))
+        .ok_or("device doesn't accept 48 kHz in exclusive mode")?;
+
+    let mut period = client.calculate_aligned_period_near(EXCLUSIVE_PERIOD_HNS, None, &format)?;
+    let mode = |p| StreamMode::EventsExclusive { period_hns: p };
+    if let Err(e) = client.initialize_client(&format, Direction::Capture, mode(period), None) {
+        let unaligned = matches!(&e, wasapi::WasapiError::Windows(w) if w.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED);
+        if !unaligned {
+            return Err(e.into());
+        }
+        // Documented recovery: use the size the driver rounded to, on a fresh client.
+        let frames = client.get_buffer_size()?;
+        period = wasapi::calculate_period_100ns(frames as i64, sr as i64);
+        client = device.get_iaudioclient()?;
+        client.initialize_client(&format, Direction::Capture, mode(period), None)?;
+    }
+
+    let period_frames = client.get_buffer_size()?;
+    let info = StreamInfo {
+        id,
+        name,
+        channels: channels as u16,
+        device_rate: SAMPLE_RATE,
+        period_frames,
+        low_latency: true,
+        exclusive: true,
+        exclusive_fallback: None,
+        stream_latency_ms: client
+            .get_stream_latency()
+            .map(|hns| hns as f32 / 10_000.0)
+            .unwrap_or(0.0),
+    };
+    Ok(Opened { client, format, sample, channels, period_frames, info })
 }
 
 fn get_device(id: Option<&str>, dir: Direction) -> Result<Device> {
@@ -98,6 +192,8 @@ fn open(device: &Device, dir: Direction) -> Result<Opened> {
         device_rate: mix_rate,
         period_frames: period,
         low_latency,
+        exclusive: false,
+        exclusive_fallback: None,
         stream_latency_ms: client
             .get_stream_latency()
             .map(|hns| hns as f32 / 10_000.0)
@@ -111,7 +207,14 @@ fn open(device: &Device, dir: Direction) -> Result<Opened> {
                 .is_ok()
             {
                 let info = make_info(&client, p.min, true);
-                return Ok(Opened { client, format: mix, channels, period_frames: p.min, info });
+                return Ok(Opened {
+                    client,
+                    format: mix,
+                    sample: SampleFmt::F32,
+                    channels,
+                    period_frames: p.min,
+                    info,
+                });
             }
             // A failed Initialize leaves the client unusable; start over.
             client = device.get_iaudioclient()?;
@@ -129,7 +232,7 @@ fn open(device: &Device, dir: Direction) -> Result<Opened> {
     // In classic shared mode the engine runs at its default period.
     let period = (def_hns as u64 * SAMPLE_RATE as u64 / 10_000_000) as u32;
     let info = make_info(&client, period, false);
-    Ok(Opened { client, format: fmt, channels, period_frames: period, info })
+    Ok(Opened { client, format: fmt, sample: SampleFmt::F32, channels, period_frames: period, info })
 }
 
 /// Raise to MMCSS "Pro Audio" and flush denormals to zero.
@@ -172,6 +275,7 @@ fn run_thread(
 pub(crate) struct CaptureArgs {
     pub device_id: Option<String>,
     pub channel: InputChannel,
+    pub exclusive: bool,
     pub chain: Box<Chain>,
     pub chain_rx: Consumer<Box<Chain>>,
     pub trash_tx: Producer<Box<Chain>>,
@@ -187,12 +291,30 @@ pub(crate) fn capture_thread(a: CaptureArgs, ready: Ready) {
 
 fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
     let device = get_device(a.device_id.as_deref(), Direction::Capture)?;
-    let op = open(&device, Direction::Capture)?;
+    let mut exclusive_err = None;
+    let op = if a.exclusive {
+        match open_exclusive_capture(&device) {
+            Ok(op) => Some(op),
+            Err(e) => {
+                exclusive_err = Some(e.0);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut op = match op {
+        Some(op) => op,
+        None => open(&device, Direction::Capture)?,
+    };
+    op.info.exclusive_fallback = exclusive_err;
     let cap = op.client.get_audiocaptureclient()?;
     let event = op.client.set_get_eventhandle()?;
     let buf_frames = op.client.get_buffer_size()? as usize;
     let block_align = op.format.get_blockalign() as usize;
     let ch = op.channels;
+    let sample = op.sample;
+    let sbytes = sample.bytes();
     let pick = match a.channel {
         InputChannel::Channel(c) if (c as usize) < ch => Some(c as usize),
         InputChannel::Channel(_) => Some(0),
@@ -241,7 +363,7 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
 
             let block = &mut mono[..n];
             for (dst, frame) in block.iter_mut().zip(bytes[..n * block_align].chunks_exact(block_align)) {
-                let s = |c: usize| f32::from_le_bytes(frame[c * 4..c * 4 + 4].try_into().unwrap());
+                let s = |c: usize| sample.read(&frame[c * sbytes..]);
                 *dst = match pick {
                     Some(c) => s(c),
                     None => (0..ch).map(s).sum::<f32>() / ch as f32,
