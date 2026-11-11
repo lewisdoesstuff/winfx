@@ -20,8 +20,25 @@ pub enum DeviceSel {
     /// Input: the Windows default recording device. Output: VB-Cable's "CABLE Input".
     #[default]
     Default,
-    /// A specific endpoint ID.
-    Id(String),
+    /// A specific endpoint. Matched by ID first; if that's gone (some drivers,
+    /// Audient's included, re-create endpoints with new IDs when the sample rate
+    /// changes), by exact friendly name.
+    Device { id: String, name: String },
+}
+
+impl DeviceSel {
+    pub fn device(d: &devices::DeviceInfo) -> Self {
+        DeviceSel::Device { id: d.id.clone(), name: d.name.clone() }
+    }
+}
+
+fn resolve(dir: devices::Dir, id: &str, name: &str) -> Result<devices::DeviceInfo> {
+    let all: Vec<_> = devices::list(dir)?.into_iter().filter(|d| d.active).collect();
+    all.iter()
+        .find(|d| d.id == id)
+        .or_else(|| all.iter().find(|d| d.name == name))
+        .cloned()
+        .ok_or_else(|| Error(format!("\"{name}\" not found (unplugged or disabled?)")))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -260,10 +277,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
     let input = match &config.input {
         DeviceSel::Default => devices::default_device(devices::Dir::Input, devices::Role::Console)
             .ok_or("no default recording device")?,
-        DeviceSel::Id(id) => devices::list(devices::Dir::Input)?
-            .into_iter()
-            .find(|d| &d.id == id)
-            .ok_or_else(|| Error(format!("input device {id} not found (unplugged?)")))?,
+        DeviceSel::Device { id, name } => resolve(devices::Dir::Input, id, name)?,
     };
     if is_virtual_cable(&input.name) {
         return Err(Error(format!(
@@ -274,7 +288,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
     }
     let input_id = Some(input.id);
     let output_id = match &config.output {
-        DeviceSel::Id(id) => id.clone(),
+        DeviceSel::Device { id, name } => resolve(devices::Dir::Output, id, name)?.id,
         DeviceSel::Default => {
             devices::find_cable_input()?
                 .ok_or("VB-Cable \"CABLE Input\" not found — is VB-Audio Virtual Cable installed?")?

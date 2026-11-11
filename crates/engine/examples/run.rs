@@ -26,11 +26,11 @@ fn main() {
     let mut config = EngineConfig::default();
     if let Some(q) = get("--input") {
         let d = devices::find(Dir::Input, &q).unwrap().unwrap_or_else(|| die(&format!("no input matches {q:?}")));
-        config.input = DeviceSel::Id(d.id);
+        config.input = DeviceSel::device(&d);
     }
     if let Some(q) = get("--output") {
         let d = devices::find(Dir::Output, &q).unwrap().unwrap_or_else(|| die(&format!("no output matches {q:?}")));
-        config.output = DeviceSel::Id(d.id);
+        config.output = DeviceSel::device(&d);
     }
     if let Some(c) = get("--channel") {
         config.input_channel = if c == "mix" {
