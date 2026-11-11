@@ -6,7 +6,8 @@
 //! back to be dropped off the audio thread.
 
 use crate::dsp::{
-    Autogain, AutogainParams, Biquad, Coeffs, Compressor, CompressorParams, Deesser, DeesserParams,
+    Autogain, AutogainParams, BassEnhancer, BassEnhancerParams, Biquad, Coeffs, Compressor,
+    CompressorParams, Convolver, ConvolverParams, Deesser, DeesserParams, Exciter, ExciterParams,
     Expander, ExpanderParams, FilterKind, Gain, GainParams, Gate, GateParams, Limiter, LimiterParams,
     Maximizer, MaximizerParams, time_coeff,
 };
@@ -105,6 +106,9 @@ pub enum EffectConfig {
     Expander(ExpanderParams),
     Autogain(AutogainParams),
     Maximizer(MaximizerParams),
+    Exciter(ExciterParams),
+    BassEnhancer(BassEnhancerParams),
+    Convolver(ConvolverParams),
 }
 
 impl EffectConfig {
@@ -120,6 +124,9 @@ impl EffectConfig {
             EffectConfig::Expander(_) => "Expander",
             EffectConfig::Autogain(_) => "Auto-gain",
             EffectConfig::Maximizer(_) => "Maximizer",
+            EffectConfig::Exciter(_) => "Exciter",
+            EffectConfig::BassEnhancer(_) => "Bass enhancer",
+            EffectConfig::Convolver(_) => "Convolver",
         }
     }
 
@@ -221,6 +228,9 @@ enum Proc {
     Expander(Expander),
     Autogain(Autogain),
     Maximizer(Maximizer),
+    Exciter(Exciter),
+    BassEnhancer(BassEnhancer),
+    Convolver(Box<Convolver>),
 }
 
 impl Proc {
@@ -242,6 +252,9 @@ impl Proc {
             EffectConfig::Expander(p) => Proc::Expander(Expander::new(p, sr)),
             EffectConfig::Autogain(p) => Proc::Autogain(Autogain::new(p, sr)),
             EffectConfig::Maximizer(p) => Proc::Maximizer(Maximizer::new(p, sr)),
+            EffectConfig::Exciter(p) => Proc::Exciter(Exciter::new(p, sr)),
+            EffectConfig::BassEnhancer(p) => Proc::BassEnhancer(BassEnhancer::new(p, sr)),
+            EffectConfig::Convolver(p) => Proc::Convolver(Box::new(Convolver::new(p, sr))),
         }
     }
 
@@ -257,7 +270,11 @@ impl Proc {
             (Proc::Deesser(_), EffectConfig::Deesser(_))
             | (Proc::Expander(_), EffectConfig::Expander(_))
             | (Proc::Autogain(_), EffectConfig::Autogain(_))
-            | (Proc::Maximizer(_), EffectConfig::Maximizer(_)) => true,
+            | (Proc::Maximizer(_), EffectConfig::Maximizer(_))
+            | (Proc::Exciter(_), EffectConfig::Exciter(_))
+            | (Proc::BassEnhancer(_), EffectConfig::BassEnhancer(_)) => true,
+            // Decided in `can_adopt` by comparing the loaded kernels.
+            (Proc::Convolver(_), EffectConfig::Convolver(_)) => false,
             _ => false,
         }
     }
@@ -286,6 +303,9 @@ impl Proc {
             (Proc::Expander(e), EffectConfig::Expander(p)) => e.set_params(p, sr),
             (Proc::Autogain(a), EffectConfig::Autogain(p)) => a.set_params(p, sr),
             (Proc::Maximizer(m), EffectConfig::Maximizer(p)) => m.set_params(p, sr),
+            (Proc::Exciter(e), EffectConfig::Exciter(p)) => e.set_params(p, sr),
+            (Proc::BassEnhancer(b), EffectConfig::BassEnhancer(p)) => b.set_params(p, sr),
+            (Proc::Convolver(c), EffectConfig::Convolver(p)) => c.set_params(p, sr),
             _ => {}
         }
     }
@@ -303,6 +323,9 @@ impl Proc {
             Proc::Expander(e) => e.process(x),
             Proc::Autogain(a) => a.process(x),
             Proc::Maximizer(m) => m.process(x),
+            Proc::Exciter(e) => e.process(x),
+            Proc::BassEnhancer(b) => b.process(x),
+            Proc::Convolver(c) => c.process(x),
         }
     }
 
@@ -361,7 +384,11 @@ impl Chain {
         let sr = self.sr;
         for new in &mut self.slots {
             if let Some(o) = old.slots.iter_mut().find(|o| o.id == new.id) {
-                if o.proc.compatible(&new.cfg, sr) {
+                let can = match (&o.proc, &new.proc) {
+                    (Proc::Convolver(a), Proc::Convolver(b)) => a.same_kernel(b),
+                    _ => o.proc.compatible(&new.cfg, sr),
+                };
+                if can {
                     std::mem::swap(&mut new.proc, &mut o.proc);
                     new.proc.set_params(&new.cfg, sr);
                 }

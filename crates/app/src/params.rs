@@ -28,6 +28,10 @@ pub enum ParamKey {
     MaxBoost,
     MaxCut,
     Speed,
+    Amount,
+    Drive,
+    Floor,
+    Mix,
     BandFreq(usize),
     BandGain(usize),
     BandQ(usize),
@@ -53,6 +57,7 @@ pub enum Unit {
     Seconds,
     /// 0 = split band, 1 = whole signal.
     DeessMode,
+    Percent,
     None,
 }
 
@@ -143,6 +148,22 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             p(MaxCut, "Max cut", DbAmount, 0.0, 24.0, 0.5, false),
             p(Speed, "Speed", Seconds, 0.2, 10.0, 0.1, false),
         ],
+        EffectConfig::Exciter(_) => vec![
+            p(Amount, "Amount", Db, -40.0, 6.0, 0.5, false),
+            p(Drive, "Drive", None, 0.5, 10.0, 0.1, false),
+            p(Freq, "From", Hz, 1000.0, 12_000.0, 10.0, true),
+            p(Ceiling, "Up to", Hz, 6000.0, 20_000.0, 10.0, true),
+        ],
+        EffectConfig::BassEnhancer(_) => vec![
+            p(Amount, "Amount", Db, -40.0, 6.0, 0.5, false),
+            p(Drive, "Drive", None, 0.5, 10.0, 0.1, false),
+            p(Freq, "Below", Hz, 40.0, 300.0, 1.0, true),
+            p(Floor, "Floor", Hz, 10.0, 120.0, 1.0, true),
+        ],
+        EffectConfig::Convolver(_) => vec![
+            p(Mix, "Mix", Percent, 0.0, 1.0, 0.01, false),
+            p(Gain, "Gain", Db, -24.0, 24.0, 0.1, false),
+        ],
         EffectConfig::Maximizer(_) => vec![
             p(Threshold, "Threshold", Db, -24.0, 0.0, 0.1, false),
             p(Ceiling, "Ceiling", Db, -6.0, 0.0, 0.1, false),
@@ -229,6 +250,16 @@ pub fn get(cfg: &EffectConfig, key: ParamKey) -> f32 {
         (EffectConfig::Autogain(a), MaxBoost) => a.max_boost_db,
         (EffectConfig::Autogain(a), MaxCut) => a.max_cut_db,
         (EffectConfig::Autogain(a), Speed) => a.speed_s,
+        (EffectConfig::Exciter(e), Amount) => e.amount_db,
+        (EffectConfig::Exciter(e), Drive) => e.drive,
+        (EffectConfig::Exciter(e), Freq) => e.freq_hz,
+        (EffectConfig::Exciter(e), Ceiling) => e.ceiling_hz,
+        (EffectConfig::BassEnhancer(b), Amount) => b.amount_db,
+        (EffectConfig::BassEnhancer(b), Drive) => b.drive,
+        (EffectConfig::BassEnhancer(b), Freq) => b.freq_hz,
+        (EffectConfig::BassEnhancer(b), Floor) => b.floor_hz,
+        (EffectConfig::Convolver(c), Mix) => c.mix,
+        (EffectConfig::Convolver(c), Gain) => c.gain_db,
         (EffectConfig::Maximizer(m), Threshold) => m.threshold_db,
         (EffectConfig::Maximizer(m), Ceiling) => m.ceiling_db,
         (EffectConfig::Maximizer(m), Release) => m.release_ms,
@@ -284,6 +315,16 @@ pub fn set(cfg: &mut EffectConfig, key: ParamKey, v: f32) {
         (EffectConfig::Autogain(a), MaxBoost) => a.max_boost_db = v,
         (EffectConfig::Autogain(a), MaxCut) => a.max_cut_db = v,
         (EffectConfig::Autogain(a), Speed) => a.speed_s = v,
+        (EffectConfig::Exciter(e), Amount) => e.amount_db = v,
+        (EffectConfig::Exciter(e), Drive) => e.drive = v,
+        (EffectConfig::Exciter(e), Freq) => e.freq_hz = v,
+        (EffectConfig::Exciter(e), Ceiling) => e.ceiling_hz = v,
+        (EffectConfig::BassEnhancer(b), Amount) => b.amount_db = v,
+        (EffectConfig::BassEnhancer(b), Drive) => b.drive = v,
+        (EffectConfig::BassEnhancer(b), Freq) => b.freq_hz = v,
+        (EffectConfig::BassEnhancer(b), Floor) => b.floor_hz = v,
+        (EffectConfig::Convolver(c), Mix) => c.mix = v,
+        (EffectConfig::Convolver(c), Gain) => c.gain_db = v,
         (EffectConfig::Maximizer(m), Threshold) => m.threshold_db = v,
         (EffectConfig::Maximizer(m), Ceiling) => m.ceiling_db = v,
         (EffectConfig::Maximizer(m), Release) => m.release_ms = v,
@@ -304,6 +345,7 @@ pub fn format(unit: Unit, v: f32) -> String {
         Unit::Lufs => format!("{v:.1} LUFS").replace('-', "−"),
         Unit::Seconds => format!("{v:.1} s"),
         Unit::DeessMode => if v >= 0.5 { "Whole signal".into() } else { "Highs only".into() },
+        Unit::Percent => format!("{:.0} %", v * 100.0),
         Unit::None => format!("{v:.2}"),
     }
 }
@@ -352,6 +394,9 @@ pub fn new_effect(kind: &str) -> Option<EffectConfig> {
         "Expander" => EffectConfig::Expander(ExpanderParams::default()),
         "Auto-gain" => EffectConfig::Autogain(AutogainParams::default()),
         "Maximizer" => EffectConfig::Maximizer(MaximizerParams::default()),
+        "Exciter" => EffectConfig::Exciter(ExciterParams::default()),
+        "Bass enhancer" => EffectConfig::BassEnhancer(BassEnhancerParams::default()),
+        "Convolver" => EffectConfig::Convolver(ConvolverParams { ir_path: String::new(), mix: 1.0, gain_db: 0.0 }),
         _ => return None,
     })
 }
@@ -364,6 +409,9 @@ pub const ADDABLE: &[&str] = &[
     "Expander",
     "Compressor",
     "De-esser",
+    "Exciter",
+    "Bass enhancer",
+    "Convolver",
     "Auto-gain",
     "Gain",
     "Maximizer",
@@ -399,6 +447,12 @@ pub fn summary(cfg: &EffectConfig) -> String {
         EffectConfig::Expander(e) => format!("{} · {:.1}:1 · up to {:.0} dB", db(e.threshold_db), e.ratio, e.range_db),
         EffectConfig::Autogain(a) => format!("Target {} · ±{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db)),
         EffectConfig::Maximizer(m) => format!("+{:.1} dB into {}", -m.threshold_db, db(m.ceiling_db)),
+        EffectConfig::Exciter(e) => format!("{} from {}", db(e.amount_db), format(Unit::Hz, e.freq_hz)),
+        EffectConfig::BassEnhancer(b) => format!("{} below {}", db(b.amount_db), format(Unit::Hz, b.freq_hz)),
+        EffectConfig::Convolver(c) => match std::path::Path::new(&c.ir_path).file_name() {
+            Some(f) => format!("{} · {:.0} % wet", f.to_string_lossy(), c.mix * 100.0),
+            None => "No impulse response chosen".into(),
+        },
     };
     s.replace("+-", "−")
 }
@@ -421,5 +475,8 @@ pub fn icon(cfg: &EffectConfig) -> &'static str {
         EffectConfig::Expander(_) => "winfx/expander.svg",
         EffectConfig::Autogain(_) => "winfx/autogain.svg",
         EffectConfig::Maximizer(_) => "winfx/maximizer.svg",
+        EffectConfig::Exciter(_) => "winfx/exciter.svg",
+        EffectConfig::BassEnhancer(_) => "winfx/bass.svg",
+        EffectConfig::Convolver(_) => "winfx/convolver.svg",
     }
 }

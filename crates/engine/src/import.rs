@@ -13,8 +13,8 @@
 
 use crate::chain::{ChainConfig, EffectConfig, EffectSlot, EqBand, EqParams, FilterParams, MAX_SLOPE};
 use crate::dsp::{
-    AutogainParams, CompressorParams, DeesserMode, DeesserParams, ExpanderParams, FilterKind, GainParams,
-    GateParams, LimiterParams, MaximizerParams,
+    AutogainParams, BassEnhancerParams, CompressorParams, DeesserMode, DeesserParams, ExciterParams,
+    ExpanderParams, FilterKind, GainParams, GateParams, LimiterParams, MaximizerParams,
 };
 use serde_json::Value;
 
@@ -39,6 +39,13 @@ pub enum Imported {
 /// Detect the format from the content and import it.
 pub fn import(text: &str) -> Result<Imported, String> {
     let t = text.trim_start_matches('\u{feff}').trim_start();
+    // A WinFX preset (e.g. shared from another machine) loads as-is.
+    if t.starts_with('{') {
+        if let Ok(chain) = serde_json::from_str::<ChainConfig>(t) {
+            let report = ImportReport { mapped: vec![format!("{} effects (WinFX preset)", chain.slots.len())], ..Default::default() };
+            return Ok(Imported::Chain(chain, report));
+        }
+    }
     if t.starts_with('{') {
         let (c, r) = from_easyeffects(t)?;
         Ok(Imported::Chain(c, r))
@@ -297,6 +304,36 @@ pub fn from_easyeffects(json: &str) -> Result<(ChainConfig, ImportReport), Strin
                 );
                 b.report.mapped.push("Maximizer".into());
                 b.gain(out_gain, bypass, "Maximizer output gain");
+            }
+            "exciter" => {
+                b.gain(in_gain, bypass, "Exciter input gain");
+                b.push(
+                    EffectConfig::Exciter(ExciterParams {
+                        amount_db: num(p, "amount", 0.0).clamp(-60.0, 12.0),
+                        drive: num(p, "harmonics", 8.5).clamp(0.5, 10.0),
+                        freq_hz: num(p, "scope", 7500.0),
+                        ceiling_hz: if flag(p, "ceil-active") { num(p, "ceil", 16_000.0) } else { 20_000.0 },
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Exciter".into());
+                b.report.approximated.push("Exciter: Calf's harmonic blend".into());
+                b.gain(out_gain, bypass, "Exciter output gain");
+            }
+            "bass_enhancer" => {
+                b.gain(in_gain, bypass, "Bass enhancer input gain");
+                b.push(
+                    EffectConfig::BassEnhancer(BassEnhancerParams {
+                        amount_db: num(p, "amount", 0.0).clamp(-60.0, 12.0),
+                        drive: num(p, "harmonics", 8.5).clamp(0.5, 10.0),
+                        freq_hz: num(p, "scope", 100.0),
+                        floor_hz: if flag(p, "floor-active") { num(p, "floor", 20.0) } else { 10.0 },
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Bass enhancer".into());
+                b.report.approximated.push("Bass enhancer: Calf's harmonic blend".into());
+                b.gain(out_gain, bypass, "Bass enhancer output gain");
             }
             _ => b.report.skipped.push(pretty),
         }
@@ -566,6 +603,13 @@ mod tests {
 
         // Ids are unique and the chain round-trips as a WinFX preset.
         let back: ChainConfig = serde_json::from_str(&serde_json::to_string(&chain).unwrap()).unwrap();
+        assert_eq!(back, chain);
+    }
+
+    #[test]
+    fn winfx_presets_import_as_is() {
+        let chain = ChainConfig::sm57_voice();
+        let Imported::Chain(back, _) = import(&serde_json::to_string_pretty(&chain).unwrap()).unwrap() else { panic!() };
         assert_eq!(back, chain);
     }
 

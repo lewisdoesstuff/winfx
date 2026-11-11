@@ -29,6 +29,12 @@ const ICONS: &[(&str, &str)] = &[
     ("winfx/autogain.svg", icon!(r#"<path d="M3 12h3l3-6 3 12 3-9 2 3h4M3 4h18"/>"#)),
     // Maximizer: arrow pushing up against a ceiling.
     ("winfx/maximizer.svg", icon!(r#"<path d="M4 4h16M12 20V8M8 12l4-4 4 4"/>"#)),
+    // Exciter: sparkle.
+    ("winfx/exciter.svg", icon!(r#"<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>"#)),
+    // Bass enhancer: a low, wide wave.
+    ("winfx/bass.svg", icon!(r#"<path d="M2 12c2.5-6 5.5-6 8 0s5.5 6 8 0 2.5-3 4-3"/>"#)),
+    // Convolver: an impulse and its decaying response.
+    ("winfx/convolver.svg", icon!(r#"<path d="M4 20V4M4 20h16M8 20v-9M11 20v-6M14 20v-4M17 20v-2"/>"#)),
     ("winfx/plug.svg", icon!(r#"<path d="M9 3v5M15 3v5M7 8h10v4a5 5 0 0 1-10 0zM12 17v4"/>"#)),
     (
         "winfx/grip.svg",

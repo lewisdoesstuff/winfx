@@ -1051,6 +1051,63 @@ impl MainView {
             )
     }
 
+    fn render_ir_picker(&self, slot_id: u32, path: &str, cx: &mut Context<Self>) -> AnyElement {
+        let p = fl(cx).clone();
+        let (text, color) = if path.is_empty() {
+            ("Choose a .wav impulse response — a room, a mic, a speaker cabinet.".to_string(), p.text2)
+        } else {
+            let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            match engine::dsp::convolver::kernel(path, engine::SAMPLE_RATE as f32) {
+                Ok(k) => (
+                    format!(
+                        "{name} · {:.2} s · {} kHz {}",
+                        k.seconds,
+                        k.source_rate as f32 / 1000.0,
+                        if k.channels == 1 { "mono" } else { "stereo, mixed to mono" }
+                    ),
+                    p.text2,
+                ),
+                Err(e) => (format!("{name}: {e}"), p.critical),
+            }
+        };
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(12.))
+            .mb(px(8.))
+            .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
+            .child(
+                fluent::button(("choose-ir", slot_id as usize), cx)
+                    .child("Choose IR…")
+                    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
+                        let rx = cx.prompt_for_paths(PathPromptOptions {
+                            files: true,
+                            directories: false,
+                            multiple: false,
+                            prompt: Some("Use as impulse response".into()),
+                        });
+                        cx.spawn_in(window, async move |this, cx| {
+                            if let Ok(Ok(Some(paths))) = rx.await {
+                                if let Some(path) = paths.into_iter().next() {
+                                    let _ = this.update(cx, |this, cx| {
+                                        this.edit_chain(cx, |c| {
+                                            if let Some(EffectSlot { effect: EffectConfig::Convolver(cv), .. }) =
+                                                c.slots.iter_mut().find(|s| s.id == slot_id)
+                                            {
+                                                cv.ir_path = path.to_string_lossy().into_owned();
+                                            }
+                                        })
+                                    });
+                                }
+                            }
+                        })
+                        .detach();
+                    })),
+            )
+            .into_any_element()
+    }
+
     fn render_calibration(&self, slot_id: u32, cx: &mut Context<Self>) -> AnyElement {
         let p = fl(cx).clone();
         let busy = self.calib.as_ref().filter(|c| c.slot == slot_id);
@@ -1982,7 +2039,11 @@ impl MainView {
             );
 
         let body: Option<AnyElement> = card.expanded.then(|| {
-            let gate_tools = matches!(slot.effect, EffectConfig::Gate(_)).then(|| self.render_calibration(id, cx));
+            let gate_tools = match &slot.effect {
+                EffectConfig::Gate(_) => Some(self.render_calibration(id, cx)),
+                EffectConfig::Convolver(c) => Some(self.render_ir_picker(id, &c.ir_path, cx)),
+                _ => None,
+            };
             let content = match &slot.effect {
                 EffectConfig::Eq(_) => self.render_eq(slot, chain, cx).into_any_element(),
                 other => div()
