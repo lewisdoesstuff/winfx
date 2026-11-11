@@ -669,7 +669,7 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
     let _ = op.client.stop_stream();
     if !heard_anything {
         return Err("the output is only passing silence. If it's a virtual cable, set its buffer larger than one \
-                    Windows audio period (in VB-Cable: 3 × 256 samples or more)"
+                    Windows audio period (in VB-Cable: 3 x 256 samples or more)"
             .into());
     }
     Ok(results)

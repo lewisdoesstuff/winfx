@@ -102,7 +102,7 @@ fn sentence(e: &str) -> String {
 }
 
 fn fmt_db(v: f32) -> String {
-    format!("{v:.0} dB").replace('-', "−")
+    format!("{v:.0} dB")
 }
 
 fn percentile(v: &mut [f32], q: f32) -> f32 {
@@ -533,7 +533,7 @@ impl MainView {
                 };
                 (sev, outcome.title.clone(), outcome.summary())
             }
-            Err(e) => (Severity::Error, format!("Couldn’t import “{file}”."), e),
+            Err(e) => (Severity::Error, format!("Couldn't import \"{file}\"."), e),
         });
         // The presets list and selection may have changed.
         let (presets, current) = {
@@ -877,7 +877,7 @@ impl MainView {
             .and_then(|_| engine::wav::write_mono(&path, &samples, engine::SAMPLE_RATE));
         self.import_notice = Some(match result {
             Ok(()) => (Severity::Success, "Recording saved.".into(), path.display().to_string()),
-            Err(e) => (Severity::Error, "Couldn’t save the recording.".into(), e),
+            Err(e) => (Severity::Error, "Couldn't save the recording.".into(), e),
         });
         cx.notify();
     }
@@ -900,7 +900,7 @@ impl MainView {
                         let secs = this.state.read(cx).engine.tap().load_recording(&samples);
                         (Severity::Success, format!("Loaded {secs:.1} s into Audition."), "Select Play to hear it through the effects.".into())
                     }
-                    Err(e) => (Severity::Error, "Couldn’t load that file.".into(), e),
+                    Err(e) => (Severity::Error, "Couldn't load that file.".into(), e),
                 });
                 cx.notify();
             });
@@ -956,11 +956,11 @@ impl MainView {
                 match &mut slot.effect {
                     E::Expander(e) => {
                         e.threshold_db = expander_thr;
-                        touched.push(format!("Expander {}", fmt_db(expander_thr)));
+                        touched.push(format!("Expander to {}", fmt_db(expander_thr)));
                     }
                     E::Gate(g) => {
                         g.threshold_db = gate_thr;
-                        touched.push(format!("Gate {}", fmt_db(gate_thr)));
+                        touched.push(format!("Gate to {}", fmt_db(gate_thr)));
                     }
                     _ => {}
                 }
@@ -970,7 +970,7 @@ impl MainView {
 
         let gap = speech - noise;
         let mut msg = format!(
-            "Speech {} · noise {} → Gain {}{}.",
+            "Speech {}, noise {}. Set Gain to {}{}.",
             fmt_db(speech),
             fmt_db(noise),
             params::format(params::Unit::Db, trim),
@@ -1011,9 +1011,9 @@ impl MainView {
                 }
             }
         }
-        let f = |v: f32| format!("{v:.0} dB").replace('-', "−");
+        let f = |v: f32| format!("{v:.0} dB");
         let (msg, ok) = if gap >= 10.0 {
-            (format!("Noise {} · speech {} → threshold {}.", f(noise), f(voice), f(threshold)), true)
+            (format!("Noise {}, speech {}. Set the threshold to {}.", f(noise), f(voice), f(threshold)), true)
         } else {
             (
                 format!(
@@ -1118,7 +1118,7 @@ fn transfer_curve(c: &engine::dsp::CompressorParams, cx: &App) -> impl IntoEleme
                 .size_full(),
             ),
         )
-        .child(fluent::caption("Input → output", cx))
+        .child(fluent::caption("Input level vs. output level", cx))
 }
 
 impl MainView {
@@ -1133,14 +1133,14 @@ impl MainView {
         let has = tap.has_recording();
         let secs = tap.recorded_seconds();
         let caption = if recording {
-            format!("Recording… {secs:.1} s of {} s", engine::tap::REC_SECONDS)
+            format!("Recording... {secs:.1} s of {} s", engine::tap::REC_SECONDS)
         } else if playing {
             format!(
                 "Looping {secs:.1} s through the effects to {}. The output is muted meanwhile.",
                 audition_device.unwrap_or_else(|| "the default device".into())
             )
         } else if let Some(e) = audition_error {
-            format!("Couldn’t play the recording. {}", sentence(&e))
+            format!("Couldn't play the recording. {}", sentence(&e))
         } else if has {
             format!("{secs:.1} s recorded. Play it and adjust the effects while it loops.")
         } else {
@@ -1207,7 +1207,7 @@ impl MainView {
             })
             .child(
                 fluent::button("rec-load", cx)
-                    .child("Load…")
+                    .child("Load...")
                     .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Loop a WAV file instead of a recording").build(w, cx))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.load_recording(window, cx))),
             )
@@ -1235,7 +1235,7 @@ impl MainView {
                     .child(
                         segment("ab-b", "Original", self.ab_original)
                             .tooltip(|w, cx| {
-                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, level-matched to the processed sound so loudness doesn’t bias the comparison").build(w, cx)
+                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, level-matched to the processed sound so loudness doesn't bias the comparison").build(w, cx)
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 if playing {
@@ -1255,7 +1255,7 @@ impl MainView {
             match engine::dsp::convolver::kernel(path, engine::SAMPLE_RATE as f32) {
                 Ok(k) => (
                     format!(
-                        "{name} · {:.2} s · {} kHz {}",
+                        "{name}, {:.2} s, {} kHz {}",
                         k.seconds,
                         k.source_rate as f32 / 1000.0,
                         if k.channels == 1 { "mono" } else { "stereo, mixed to mono" }
@@ -1274,7 +1274,7 @@ impl MainView {
             .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
             .child(
                 fluent::button(("choose-ir", slot_id as usize), cx)
-                    .child("Choose file…")
+                    .child("Choose file...")
                     .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
                         let rx = cx.prompt_for_paths(PathPromptOptions {
                             files: true,
@@ -1310,9 +1310,9 @@ impl MainView {
             (Some(c), _) => {
                 let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32().ceil();
                 if c.talking {
-                    (format!("Now speak normally… {left:.0}"), p.accent_text)
+                    (format!("Now speak normally... {left:.0}"), p.accent_text)
                 } else {
-                    (format!("Stay quiet — measuring background noise… {left:.0}"), p.accent_text)
+                    (format!("Stay quiet. Measuring background noise... {left:.0}"), p.accent_text)
                 }
             }
             (None, Some((id, msg, ok))) if *id == slot_id => (msg.clone(), if *ok { p.success } else { p.caution }),
@@ -1328,7 +1328,7 @@ impl MainView {
             .child(
                 fluent::button(("calibrate", slot_id as usize), cx)
                     .when(busy.is_some(), |b| b.opacity(0.5))
-                    .child(if busy.is_some() { "Listening…" } else { "Calibrate" })
+                    .child(if busy.is_some() { "Listening..." } else { "Calibrate" })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if this.calib.is_none() {
                             this.start_calibration(slot_id, cx);
@@ -1405,7 +1405,7 @@ impl MainView {
                 if dropouts > 0 { Severity::Warning } else { Severity::Success },
                 "Active",
                 format!(
-                    "{} · {}",
+                    "{}, {}",
                     match (self.measured_latency_ms(), self.latency_estimate_ms(cx)) {
                         (Some(m), _) => format!("{m:.0} ms latency"),
                         (None, Some(e)) => format!("~{e:.0} ms latency"),
@@ -1420,11 +1420,11 @@ impl MainView {
                 cx,
             )
             .into_any_element(),
-            RunState::Starting => fluent::info_bar(Severity::Info, "Starting", "Opening devices…".into(), cx).into_any_element(),
+            RunState::Starting => fluent::info_bar(Severity::Info, "Starting", "Opening devices...".into(), cx).into_any_element(),
             RunState::Retrying => fluent::info_bar(
                 Severity::Error,
                 "Not running",
-                st.last_error.as_deref().map(sentence).unwrap_or_else(|| "Retrying…".into()),
+                st.last_error.as_deref().map(sentence).unwrap_or_else(|| "Retrying...".into()),
                 cx,
             )
             .into_any_element(),
@@ -1439,8 +1439,8 @@ impl MainView {
         let exclusive = s.config.engine.exclusive_input;
         let mon = s.config.engine.monitor.clone();
         let input_caption = match &self.status.input {
-            Some(i) if i.exclusive => format!("Exclusive · {:.1} ms period", i.period_frames as f32 / 48.0),
-            Some(i) => format!("Shared · {:.1} ms period", i.period_frames as f32 / 48.0),
+            Some(i) if i.exclusive => format!("Exclusive, {:.1} ms period", i.period_frames as f32 / 48.0),
+            Some(i) => format!("Shared, {:.1} ms period", i.period_frames as f32 / 48.0),
             None => "Not connected".into(),
         };
         let header = |icon: AnyElement, title: &str, sub: String| {
@@ -1468,9 +1468,9 @@ impl MainView {
                 (Some(c), _) => {
                     let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32().ceil();
                     if c.talking {
-                        (format!("Now speak normally… {left:.0}"), p.accent_text)
+                        (format!("Now speak normally... {left:.0}"), p.accent_text)
                     } else {
-                        (format!("Stay quiet — measuring background noise… {left:.0}"), p.accent_text)
+                        (format!("Stay quiet. Measuring background noise... {left:.0}"), p.accent_text)
                     }
                 }
                 (None, Some((msg, ok))) => (msg.clone(), if *ok { p.success } else { p.caution }),
@@ -1486,10 +1486,10 @@ impl MainView {
                 .child(
                     fluent::button("mic-calibrate", cx)
                         .when(busy, |b| b.opacity(0.5))
-                        .child(if busy { "Listening…" } else { "Calibrate" })
+                        .child(if busy { "Listening..." } else { "Calibrate" })
                         .tooltip(|w, cx| {
                             gpui_component::tooltip::Tooltip::new(
-                                "Listens to 4 s of silence, then 5 s of speech. Sets the first Gain effect so speech sits at −20 dBFS, and the Gate and Expander thresholds just above the background noise.",
+                                "Listens to 4 s of silence, then 5 s of speech. Sets the first Gain effect so speech sits at -20 dBFS, and the Gate and Expander thresholds just above the background noise.",
                             )
                             .build(w, cx)
                         })
@@ -1515,7 +1515,7 @@ impl MainView {
                     .items_center()
                     .justify_between()
                     .child("Exclusive mode")
-                    .child(fluent::switch("exclusive", exclusive, "Lower latency. Other apps can’t use this device while WinFX is running.", cx, {
+                    .child(fluent::switch("exclusive", exclusive, "Lower latency. Other apps can't use this device while WinFX is running.", cx, {
                         let state = self.state.clone();
                         move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_input = on))
                     })),
@@ -1523,8 +1523,8 @@ impl MainView {
 
         let exclusive_out = s.config.engine.exclusive_output;
         let output_caption = match &self.status.output {
-            Some(o) if o.exclusive => format!("Exclusive · {:.1} ms period", o.period_frames as f32 / 48.0),
-            Some(o) => format!("Shared · {:.1} ms period", o.period_frames as f32 / 48.0),
+            Some(o) if o.exclusive => format!("Exclusive, {:.1} ms period", o.period_frames as f32 / 48.0),
+            Some(o) => format!("Shared, {:.1} ms period", o.period_frames as f32 / 48.0),
             None => "Not connected".into(),
         };
         let measuring = self.status.latency_test == engine::LatencyTest::Running;
@@ -1533,7 +1533,7 @@ impl MainView {
             engine::LatencyTest::Done { path_ms, min_ms, max_ms, chain_ms, trials } => (
                 format!("Latency: {:.1} ms", path_ms + chain_ms),
                 format!(
-                    "Input to output, median of {trials} ({:.1}–{:.1} ms) · {margin_ms:.1} ms safety buffer",
+                    "Input to output, median of {trials} ({:.1} to {:.1} ms), {margin_ms:.1} ms safety buffer",
                     min_ms + chain_ms,
                     max_ms + chain_ms
                 ),
@@ -1543,7 +1543,7 @@ impl MainView {
             _ => (
                 match self.latency_estimate_ms(cx) {
                     Some(e) => format!("Latency: ~{e:.0} ms"),
-                    None => "Latency: —".into(),
+                    None => "Latency: unknown".into(),
                 },
                 "Processing only. Measure to include the devices.".to_string(),
                 p.text2,
@@ -1566,7 +1566,7 @@ impl MainView {
                     .child(fluent::switch(
                         "exclusive-out",
                         exclusive_out,
-                        "Lower latency. Other apps can’t play to this device while WinFX is running.",
+                        "Lower latency. Other apps can't play to this device while WinFX is running.",
                         cx,
                         {
                             let state = self.state.clone();
@@ -1591,7 +1591,7 @@ impl MainView {
                     .child(
                         fluent::button("measure", cx)
                             .when(measuring, |b| b.opacity(0.5))
-                            .child(if measuring { "Measuring…" } else { "Measure" })
+                            .child(if measuring { "Measuring..." } else { "Measure" })
                             .tooltip(|w, cx| {
                                 gpui_component::tooltip::Tooltip::new(
                                     "Plays 5 short clicks through the output and times their arrival. Anything recording from the output will hear them.",
@@ -1610,7 +1610,7 @@ impl MainView {
             _ if !mon.enabled => "Listen to the processed signal".to_string(),
             (Some(_), _) => format!("~{:.0} ms latency", self.status.monitor_latency_ms),
             (None, Some(e)) => sentence(e),
-            _ => "Starting…".into(),
+            _ => "Starting...".into(),
         };
         let monitor_card = fluent::card(cx)
             .p(px(16.))
@@ -1765,7 +1765,7 @@ impl MainView {
             .child(
                 div()
                     .relative()
-                    .child(fluent::button("save-as", cx).child("Save as…").on_click(cx.listener(
+                    .child(fluent::button("save-as", cx).child("Save as...").on_click(cx.listener(
                         |this, _: &ClickEvent, _, cx| {
                             if !this.just_closed() {
                                 this.save_as_open = true;
@@ -1779,7 +1779,7 @@ impl MainView {
             .child(
                 fluent::button("import", cx)
                     .child(fluent::glyph(g::IMPORT, 14.))
-                    .child("Import…")
+                    .child("Import...")
                     .tooltip(|w, cx| {
                         gpui_component::tooltip::Tooltip::new(
                             "Import an EasyEffects preset (.json) or an Equalizer APO / AutoEQ file (.txt). You can also drop files on the window.",
@@ -1830,7 +1830,7 @@ impl MainView {
                 fluent::info_bar(
                     Severity::Warning,
                     "Input is in shared mode.",
-                    format!("Exclusive mode isn’t available ({why}), so latency is higher."),
+                    format!("Exclusive mode isn't available ({why}), so latency is higher."),
                     cx,
                 )
                 .into_any_element(),
@@ -1960,7 +1960,7 @@ impl MainView {
                     .text_color(p.on_accent)
                     .when(selected, |d| d.child((i + 1).to_string()))
             }))
-            .children([(6.0, "+6"), (0.0, "0 dB"), (-6.0, "−6")].map(|(db, t)| {
+            .children([(6.0, "+6"), (0.0, "0 dB"), (-6.0, "-6")].map(|(db, t)| {
                 div().absolute().left(px(6.)).top(px(eq_y(db, EQ_H) - 14.)).text_size(px(10.)).line_height(px(12.)).text_color(p.text3).child(t)
             }))
             .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| this.eq_mouse_down(ev.position, window, cx)))
@@ -1992,7 +1992,7 @@ impl MainView {
                 let row = |k: &str, v: String| {
                     div().flex().justify_between().text_color(p.text2).child(k.to_owned()).child(div().text_color(p.text).child(v))
                 };
-                let gain = if b.kind.has_gain() { params::format(params::Unit::Db, b.gain_db) } else { "—".to_string() };
+                let gain = if b.kind.has_gain() { params::format(params::Unit::Db, b.gain_db) } else { "-".to_string() };
                 div()
                     .id(("band", i))
                     .min_w_0()
@@ -2215,7 +2215,7 @@ impl MainView {
                                 .text_xs()
                                 .text_right()
                                 .text_color(p.text2)
-                                .child(if gr < 0.05 { "0.0 dB".to_string() } else { format!("−{gr:.1} dB") }),
+                                .child(if gr < 0.05 { "0.0 dB".to_string() } else { format!("-{gr:.1} dB") }),
                         ),
                 )
             })

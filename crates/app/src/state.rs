@@ -244,7 +244,7 @@ impl AppState {
                 self.save_preset(&name); // writes it and selects it
                 self.config.preset = Some(name.clone());
                 self.save();
-                Ok(ImportOutcome { title: format!("Imported “{name}”"), report })
+                Ok(ImportOutcome { title: format!("Imported \"{name}\""), report })
             }
             Imported::Eq(eq, report) => {
                 let mut chain = self.chain().clone();
@@ -266,7 +266,7 @@ impl AppState {
                     }
                 }
                 self.set_chain(chain);
-                Ok(ImportOutcome { title: format!("Loaded {bands}-band EQ from “{stem}”"), report })
+                Ok(ImportOutcome { title: format!("Loaded {bands}-band EQ from \"{stem}\""), report })
             }
         }
     }

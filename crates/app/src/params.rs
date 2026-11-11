@@ -114,7 +114,7 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             .iter()
             .enumerate()
             .flat_map(|(i, b)| {
-                let name = format!("{} · {}", i + 1, band_name(b));
+                let name = format!("{}: {}", i + 1, band_name(b));
                 let mut v = vec![p(BandFreq(i), &format!("{name} freq"), Hz, 20.0, 20_000.0, 1.0, true)];
                 if has_gain(b.kind) {
                     v.push(p(BandGain(i), &format!("{name} gain"), Db, -18.0, 18.0, 0.1, false));
@@ -460,13 +460,13 @@ pub fn format(unit: Unit, v: f32) -> String {
     match unit {
         Unit::Hz if v >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
         Unit::Hz => format!("{v:.0} Hz"),
-        Unit::Db => format!("{:+.1} dB", if v.abs() < 0.05 { 0.0 } else { v }).replace('-', "−"),
+        Unit::Db => format!("{:+.1} dB", if v.abs() < 0.05 { 0.0 } else { v }),
         Unit::DbAmount => format!("{v:.1} dB"),
         Unit::Ms if v < 10.0 => format!("{v:.1} ms"),
         Unit::Ms => format!("{v:.0} ms"),
         Unit::Ratio => format!("{v:.1}:1"),
         Unit::Slope => format!("{} dB/oct", (v.round() as i32) * 12),
-        Unit::Lufs => format!("{v:.1} LUFS").replace('-', "−"),
+        Unit::Lufs => format!("{v:.1} LUFS"),
         Unit::Seconds => format!("{v:.1} s"),
         Unit::DeessMode => if v >= 0.5 { "Whole signal".into() } else { "Highs only".into() },
         Unit::Percent => format!("{:.0} %", v * 100.0),
@@ -474,14 +474,14 @@ pub fn format(unit: Unit, v: f32) -> String {
             let s = v.round() as i32;
             match s {
                 0 => "0 st".into(),
-                12 | -12 => format!("{} octave", if s > 0 { "+1" } else { "−1" }),
-                _ => format!("{s:+} st").replace('-', "−"),
+                12 | -12 => format!("{} octave", if s > 0 { "+1" } else { "-1" }),
+                _ => format!("{s:+} st"),
             }
         }
         Unit::Note => NOTE_NAMES[(v.round() as usize).min(11)].into(),
         Unit::ScaleName => ["Chromatic", "Major", "Minor"][(v.round() as usize).min(2)].into(),
-        Unit::Times => format!("{v:.0}×"),
-        Unit::Cents => format!("{v:+.0} ¢").replace('-', "−"),
+        Unit::Times => format!("{v:.0}x"),
+        Unit::Cents => format!("{v:+.0} cents"),
         Unit::None => format!("{v:.2}"),
     }
 }
@@ -569,66 +569,66 @@ pub const ADDABLE: &[&str] = &[
 /// "A3"-style name of the nearest note to `hz`.
 pub fn note_name(hz: f32) -> String {
     if hz <= 0.0 {
-        return "—".into();
+        return "-".into();
     }
     let midi = (69.0 + 12.0 * (hz / 440.0).log2()).round() as i32;
     format!("{}{}", NOTE_NAMES[midi.rem_euclid(12) as usize], midi / 12 - 1)
 }
 
-pub const NOTE_NAMES: [&str; 12] = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
+pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 
 /// One-line card summary, e.g. "−28 dB · 3:1 · 5 / 120 ms".
 pub fn summary(cfg: &EffectConfig) -> String {
-    let db = |v: f32| format!("{v:.1} dB").replace('-', "−");
+    let db = |v: f32| format!("{v:.1} dB");
     let s = match cfg {
-        EffectConfig::Filter(f) => format!("{} · {} · Q {:.2}", format(Unit::Hz, f.freq_hz), format(Unit::Slope, f.slope as f32), f.q),
+        EffectConfig::Filter(f) => format!("{}, {}, Q {:.2}", format(Unit::Hz, f.freq_hz), format(Unit::Slope, f.slope as f32), f.q),
         EffectConfig::Eq(e) => {
             let on = e.bands.iter().filter(|b| b.enabled).count();
-            let g = if e.gain_db.abs() >= 0.05 { format!(" · {} out", format(Unit::Db, e.gain_db)) } else { String::new() };
+            let g = if e.gain_db.abs() >= 0.05 { format!(", {} out", format(Unit::Db, e.gain_db)) } else { String::new() };
             format!("{on} band{}{g}", if on == 1 { "" } else { "s" })
         }
-        EffectConfig::Gate(g) => format!("{} threshold · {:.0} dB range", db(g.threshold_db), g.range_db),
+        EffectConfig::Gate(g) => format!("{} threshold, {:.0} dB range", db(g.threshold_db), g.range_db),
         EffectConfig::Compressor(c) => format!(
-            "{} · {:.1}:1 · {} / {} ms",
+            "{}, {:.1}:1, {} / {} ms",
             db(c.threshold_db),
             c.ratio,
             trim(c.attack_ms),
             trim(c.release_ms)
         ),
         EffectConfig::Gain(g) => format(Unit::Db, g.gain_db),
-        EffectConfig::Limiter(l) => format!("Ceiling {} · {} ms look-ahead", db(l.ceiling_db), trim(l.lookahead_ms)),
+        EffectConfig::Limiter(l) => format!("Ceiling {}, {} ms look-ahead", db(l.ceiling_db), trim(l.lookahead_ms)),
         EffectConfig::Deesser(d) => format!(
-            "Above {} · {} · {:.1}:1",
+            "Above {}, {}, {:.1}:1",
             format(Unit::Hz, d.freq_hz),
             db(d.threshold_db),
             d.ratio
         ),
-        EffectConfig::Expander(e) => format!("{} · {:.1}:1 · up to {:.0} dB", db(e.threshold_db), e.ratio, e.range_db),
-        EffectConfig::Autogain(a) => format!("Target {} · ±{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db)),
+        EffectConfig::Expander(e) => format!("{}, {:.1}:1, up to {:.0} dB", db(e.threshold_db), e.ratio, e.range_db),
+        EffectConfig::Autogain(a) => format!("Target {}, +/-{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db)),
         EffectConfig::Maximizer(m) => format!("+{:.1} dB into {}", -m.threshold_db, db(m.ceiling_db)),
-        EffectConfig::Pitch(x) => format!("{} · ~{:.0} ms delay", format(Unit::Semitones, x.semitones), x.window_ms / 2.0),
+        EffectConfig::Pitch(x) => format!("{}, ~{:.0} ms delay", format(Unit::Semitones, x.semitones), x.window_ms / 2.0),
         EffectConfig::Harmonizer(x) => format!(
             "{} and {} voices",
             format(Unit::Semitones, x.voice1_semitones),
             format(Unit::Semitones, x.voice2_semitones)
         ),
         EffectConfig::Autotune(x) => format!(
-            "{} {} · {:.0} ms retune",
+            "{} {}, {:.0} ms retune",
             NOTE_NAMES[(x.key as usize).min(11)],
             ["chromatic", "major", "minor"][x.scale as usize],
             x.speed_ms
         ),
-        EffectConfig::Reverb(x) => format!("{:.0} % room · {:.0} % wet", x.room_size * 100.0, x.mix * 100.0),
-        EffectConfig::Delay(x) => format!("{:.0} ms · {:.0} % feedback", x.time_ms, x.feedback * 100.0),
-        EffectConfig::Crusher(x) => format!("{:.1} bits · {:.0}× downsample", x.bits, x.downsample),
+        EffectConfig::Reverb(x) => format!("{:.0} % room, {:.0} % wet", x.room_size * 100.0, x.mix * 100.0),
+        EffectConfig::Delay(x) => format!("{:.0} ms, {:.0} % feedback", x.time_ms, x.feedback * 100.0),
+        EffectConfig::Crusher(x) => format!("{:.1} bits, {:.0}x downsample", x.bits, x.downsample),
         EffectConfig::Exciter(e) => format!("{} from {}", db(e.amount_db), format(Unit::Hz, e.freq_hz)),
         EffectConfig::BassEnhancer(b) => format!("{} below {}", db(b.amount_db), format(Unit::Hz, b.freq_hz)),
         EffectConfig::Convolver(c) => match std::path::Path::new(&c.ir_path).file_name() {
-            Some(f) => format!("{} · {:.0} % wet", f.to_string_lossy(), c.mix * 100.0),
+            Some(f) => format!("{}, {:.0} % wet", f.to_string_lossy(), c.mix * 100.0),
             None => "No impulse response chosen".into(),
         },
     };
-    s.replace("+-", "−")
+    s.replace("+-", "-")
 }
 
 fn trim(v: f32) -> String {

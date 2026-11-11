@@ -403,7 +403,7 @@ fn meter_frac(db: f32) -> f32 {
 pub fn level_meter(label: &str, peak: f32, rms: f32, cx: &App) -> Div {
     let p = fl(cx);
     let peak_color = if peak > -3.0 { p.critical } else if peak > -9.0 { p.caution } else { p.accent };
-    let ticks = [(-60.0, "−60"), (-40.0, "−40"), (-20.0, "−20"), (-6.0, "−6"), (0.0, "0")];
+    let ticks = [(-60.0, "-60"), (-40.0, "-40"), (-20.0, "-20"), (-6.0, "-6"), (0.0, "0")];
     div()
         .flex()
         .flex_col()
@@ -416,7 +416,7 @@ pub fn level_meter(label: &str, peak: f32, rms: f32, cx: &App) -> Div {
                 .line_height(px(16.))
                 .text_color(p.text2)
                 .child(label.to_owned())
-                .child(if peak <= -89.0 { "−∞".to_owned() } else { format!("{:.1} dB", peak).replace('-', "−") }),
+                .child(if peak <= -89.0 { "-inf".to_owned() } else { format!("{:.1} dB", peak) }),
         )
         .child(
             div()

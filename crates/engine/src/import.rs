@@ -442,7 +442,7 @@ fn ee_equalizer(p: &Value, report: &mut ImportReport) -> EqParams {
     let n = p.get("num-bands").and_then(Value::as_u64).unwrap_or(32) as usize;
     let left = p.get("left").cloned().unwrap_or(Value::Null);
     if flag(p, "split-channels") && p.get("right") != p.get("left") {
-        report.approximated.push("Equalizer: separate left/right settings — left channel used".into());
+        report.approximated.push("Equalizer: separate left/right settings (used the left channel)".into());
     }
     let mode = text(p, "mode");
     if !mode.is_empty() && mode != "IIR" {
@@ -637,9 +637,9 @@ pub fn from_apo(text: &str) -> Result<(EqParams, ImportReport), String> {
     }
     if bands.is_empty() {
         return Err(if saw_graphic {
-            "GraphicEQ files aren't supported — use AutoEQ's ParametricEQ.txt instead".into()
+            "GraphicEQ files aren't supported. Use AutoEQ's ParametricEQ.txt instead".into()
         } else {
-            "no \"Filter:\" lines found — not an Equalizer APO / AutoEQ file".into()
+            "no \"Filter:\" lines found. This isn't an Equalizer APO or AutoEQ file".into()
         });
     }
     report.mapped.push(format!("Equalizer ({} bands)", bands.len()));
