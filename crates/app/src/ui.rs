@@ -702,8 +702,27 @@ impl MainView {
         if self.last_device_poll.elapsed() > Duration::from_secs(3) {
             self.last_device_poll = Instant::now();
             self.poll_devices(window, cx);
+            self.poll_presets(window, cx);
         }
         cx.notify();
+    }
+
+    /// Pick up presets added, renamed or removed in the folder outside the app.
+    fn poll_presets(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let (changed, presets, current) = self.state.update(cx, |s, _| {
+            let before = s.presets.clone();
+            s.refresh_presets();
+            (s.presets != before, s.presets.clone(), s.config.preset.clone())
+        });
+        if !changed {
+            return;
+        }
+        let row = current.and_then(|c| presets.iter().position(|p| *p == c)).map(IndexPath::new);
+        let items: Vec<SharedString> = presets.into_iter().map(Into::into).collect();
+        self.preset_sel.update(cx, |s, cx| {
+            s.set_items(items, window, cx);
+            s.set_selected_index(row, window, cx);
+        });
     }
 
     fn poll_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
