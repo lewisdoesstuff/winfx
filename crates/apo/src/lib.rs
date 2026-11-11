@@ -8,7 +8,7 @@
 //! The effects chain comes from the WinFX app through shared memory (see
 //! `host.rs` and `engine::shared`); until one arrives, or while bypassed, audio
 //! passes through untouched. Non-real-time calls are logged to
-//! C:\ProgramData\WinFX-dev\apo-logs\apo.log.
+//! C:\ProgramData\WinFX\apo.log.
 
 #![allow(non_snake_case)]
 
@@ -25,8 +25,7 @@ use windows::Win32::Media::Audio::Apo::*;
 use windows::Win32::System::Com::CoTaskMemAlloc;
 use windows_core::{GUID, Interface};
 
-pub const CLSID_SFX: GUID = GUID::from_u128(0x77069dd4_922e_4a92_8b31_ea606fedce4b);
-pub const CLSID_MFX: GUID = GUID::from_u128(0xb1392a38_ebf1_43a8_b2bb_0ec0e7e87d37);
+pub use engine::apo::{CLSID_MFX, CLSID_SFX};
 /// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 const SUBTYPE_FLOAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 
@@ -65,6 +64,9 @@ struct Stats {
     silent_calls: AtomicU64,
     /// f32 bits of the largest input sample seen.
     in_peak: AtomicU32,
+    /// Processing time per call, nanoseconds.
+    total_ns: AtomicU64,
+    max_ns: AtomicU64,
 }
 
 pub(crate) struct Core {
@@ -185,7 +187,7 @@ impl Core {
         let inst = host::Inst::new(rt.rate);
         host::register(inst.clone());
         rt.inst = Some(inst);
-        for c in [&self.stats.calls, &self.stats.frames, &self.stats.silent_calls] {
+        for c in [&self.stats.calls, &self.stats.frames, &self.stats.silent_calls, &self.stats.total_ns, &self.stats.max_ns] {
             c.store(0, Relaxed);
         }
         self.stats.in_peak.store(0, Relaxed);
@@ -203,13 +205,16 @@ impl Core {
         }
         let s = &self.stats;
         let peak = f32::from_bits(s.in_peak.load(Relaxed));
+        let calls = s.calls.load(Relaxed).max(1);
         log::line(&format!(
-            "[{}] UnlockForProcess: {} calls, {} frames, {} flagged silent, input peak {:.1} dBFS",
+            "[{}] UnlockForProcess: {} calls, {} frames, {} flagged silent, input peak {:.1} dBFS, process avg {:.1} us max {:.1} us",
             self.tag(),
             s.calls.load(Relaxed),
             s.frames.load(Relaxed),
             s.silent_calls.load(Relaxed),
-            20.0 * peak.max(1e-9).log10()
+            20.0 * peak.max(1e-9).log10(),
+            s.total_ns.load(Relaxed) as f64 / calls as f64 / 1000.0,
+            s.max_ns.load(Relaxed) as f64 / 1000.0
         ));
         Ok(())
     }
@@ -224,6 +229,7 @@ impl Core {
         out.u32ValidFrameCount = n as u32;
         out.u32BufferFlags = BUFFER_VALID;
 
+        let t0 = std::time::Instant::now();
         let Ok(mut guard) = self.rt.try_lock() else { return };
         let rt = &mut *guard;
         let ch = rt.channels;
@@ -322,6 +328,9 @@ impl Core {
         if silent {
             s.silent_calls.fetch_add(1, Relaxed);
         }
+        let ns = t0.elapsed().as_nanos() as u64;
+        s.total_ns.fetch_add(ns, Relaxed);
+        s.max_ns.fetch_max(ns, Relaxed);
         if let Some(sh) = sh {
             sh.frames.fetch_add(n as u64, Relaxed);
             sh.rate.store(*rate as u32, Relaxed);

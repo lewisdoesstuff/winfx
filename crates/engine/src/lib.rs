@@ -5,6 +5,7 @@
 //! Nothing on the audio threads locks or allocates in steady state.
 
 pub mod analysis;
+pub mod apo;
 pub mod chain;
 pub mod devices;
 pub mod dsp;

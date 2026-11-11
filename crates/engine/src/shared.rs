@@ -92,9 +92,9 @@ impl Shared {
 }
 
 /// Where the shared block lives. Its folder must let both the user and
-/// LOCAL SERVICE (the audio engine) read and write.
+/// LOCAL SERVICE (the audio engine) read and write (`apo::ensure_data_dir`).
 pub fn default_path() -> PathBuf {
-    PathBuf::from(r"C:\ProgramData\WinFX-dev\apo-logs\shared.bin")
+    crate::apo::data_dir().join("shared.bin")
 }
 
 /// A mapped view of the shared file. Never moves; unmapped on drop.
