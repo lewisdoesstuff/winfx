@@ -15,9 +15,6 @@ pub struct AppConfig {
     /// Last window position/size, restored on open.
     #[serde(default)]
     pub window: Option<SavedWindow>,
-    /// The communications-device warning was dismissed for this device name.
-    #[serde(default)]
-    pub dismissed_comms_warning: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -34,7 +31,6 @@ pub struct AppState {
     pub config: AppConfig,
     pub inputs: Vec<DeviceInfo>,
     pub outputs: Vec<DeviceInfo>,
-    pub comms_input: Option<DeviceInfo>,
     pub presets: Vec<String>,
     /// Preview mode: synthetic engine, nothing is written to disk.
     pub preview: bool,
@@ -81,7 +77,6 @@ impl AppState {
             engine: EngineConfig::default(),
             preset: None,
             window: None,
-            dismissed_comms_warning: None,
         });
         let first_run = first_run && !preview;
 
@@ -94,7 +89,6 @@ impl AppState {
             config: config.clone(),
             inputs: vec![],
             outputs: vec![],
-            comms_input: None,
             presets: vec![],
             preview,
             pending_import: std::env::args_os()
@@ -136,7 +130,6 @@ impl AppState {
     pub fn refresh_devices(&mut self) {
         self.inputs = devices::list(Dir::Input).unwrap_or_default().into_iter().filter(|d| d.active).collect();
         self.outputs = devices::list(Dir::Output).unwrap_or_default().into_iter().filter(|d| d.active).collect();
-        self.comms_input = devices::default_device(Dir::Input, Role::Communications);
     }
 
     pub fn refresh_presets(&mut self) {

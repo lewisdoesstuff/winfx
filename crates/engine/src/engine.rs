@@ -351,8 +351,8 @@ impl Running {
         };
         if is_virtual_cable(&device.name) {
             return Err(Error(format!(
-                "monitor output is \"{}\" — monitoring into the virtual cable would put your \
-                 voice into the mic twice. Pick your headphones.",
+                "\"{}\" is a virtual cable, so monitoring would feed the output back into \
+                 itself. Choose another device.",
                 device.name
             )));
         }
@@ -660,8 +660,8 @@ fn start(
     };
     if is_virtual_cable(&input.name) {
         return Err(Error(format!(
-            "input is \"{}\", the virtual cable this app plays into — that would loop back on \
-             itself. Pick your microphone as the input.",
+            "\"{}\" is a virtual cable, so the output would loop back into the input. \
+             Choose another input.",
             input.name
         )));
     }
@@ -670,7 +670,7 @@ fn start(
         DeviceSel::Device { id, name } => resolve(devices::Dir::Output, id, name)?.id,
         DeviceSel::Default => {
             devices::find_cable_input()?
-                .ok_or("VB-Cable \"CABLE Input\" not found — is VB-Audio Virtual Cable installed?")?
+                .ok_or("no output device. Install a virtual audio cable, such as VB-Audio Virtual Cable, or choose an output")?
                 .id
         }
     };
@@ -764,7 +764,7 @@ fn measure_latency(session: Arc<Session>, out_name: String, status: Arc<Mutex<St
         let rec = devices::list(devices::Dir::Input)?
             .into_iter()
             .find(|d| d.active && d.name == rec_name)
-            .ok_or_else(|| Error(format!("couldn't find \"{rec_name}\", the recording side of the virtual mic")))?;
+            .ok_or_else(|| Error(format!("couldn't find \"{rec_name}\", the recording side of the output")))?;
         stream::listen_for_clicks(&rec.id, &session, 5)
     })();
     let mut s = status.lock().unwrap();
@@ -779,7 +779,7 @@ fn measure_latency(session: Arc<Session>, out_name: String, status: Arc<Mutex<St
                 trials: v.len(),
             }
         }
-        Ok(_) => LatencyTest::Failed("no click arrived at CABLE Output".into()),
+        Ok(_) => LatencyTest::Failed("no clicks arrived at the output".into()),
         Err(e) => LatencyTest::Failed(e.0),
     };
 }

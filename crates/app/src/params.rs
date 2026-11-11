@@ -199,7 +199,7 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             p(Voice1Db, "Voice 1 level", Db, -40.0, 6.0, 0.5, false),
             p(Voice2Semi, "Voice 2", Unit::Semitones, -12.0, 12.0, 1.0, false),
             p(Voice2Db, "Voice 2 level", Db, -40.0, 6.0, 0.5, false),
-            p(DryDb, "Your voice", Db, -40.0, 6.0, 0.5, false),
+            p(DryDb, "Dry level", Db, -40.0, 6.0, 0.5, false),
         ],
         EffectConfig::Autotune(_) => vec![
             p(Key, "Key", Note, 0.0, 11.0, 1.0, false),
@@ -460,7 +460,7 @@ pub fn format(unit: Unit, v: f32) -> String {
     match unit {
         Unit::Hz if v >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
         Unit::Hz => format!("{v:.0} Hz"),
-        Unit::Db => format!("{v:+.1} dB").replace('-', "−"),
+        Unit::Db => format!("{:+.1} dB", if v.abs() < 0.05 { 0.0 } else { v }).replace('-', "−"),
         Unit::DbAmount => format!("{v:.1} dB"),
         Unit::Ms if v < 10.0 => format!("{v:.1} ms"),
         Unit::Ms => format!("{v:.0} ms"),

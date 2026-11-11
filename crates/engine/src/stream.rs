@@ -652,7 +652,7 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
                     continue; // still in the silence before the click; just drain
                 }
                 if info.timestamp == 0 || info.flags.timestamp_error {
-                    return Err("the virtual cable doesn't report timestamps".into());
+                    return Err("the output doesn't report timestamps".into());
                 }
                 for (i, frame) in bytes[..n as usize * block_align].chunks_exact(block_align).enumerate() {
                     let arrival = info.timestamp + (i as u64 * 10_000_000) / SAMPLE_RATE as u64;
@@ -668,7 +668,8 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
     }
     let _ = op.client.stop_stream();
     if !heard_anything {
-        return Err("the virtual cable isn't passing audio (CABLE Output is pure silence). In VB-Cable's control panel,                     the latency must be larger than a Windows audio period: use 3×256 smp or more"
+        return Err("the output is only passing silence. If it's a virtual cable, set its buffer larger than one \
+                    Windows audio period (in VB-Cable: 3 × 256 samples or more)"
             .into());
     }
     Ok(results)

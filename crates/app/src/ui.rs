@@ -2,7 +2,7 @@
 
 use crate::fluent::{self, fl, g, Severity};
 use crate::params::{self, ParamKey, ParamSpec};
-use crate::state::{is_cable, AppState};
+use crate::state::AppState;
 use crate::system;
 use engine::chain::{EffectConfig, EffectSlot};
 use engine::dsp::lin_to_db;
@@ -90,6 +90,16 @@ struct Calib {
 
 const CALIB_QUIET: Duration = Duration::from_secs(4);
 const CALIB_TALK: Duration = Duration::from_secs(5);
+
+/// Engine errors are lower-case fragments; show them as sentences.
+fn sentence(e: &str) -> String {
+    let mut c = e.chars();
+    let mut out: String = c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default();
+    if !out.ends_with(['.', '?', '!']) {
+        out.push('.');
+    }
+    out
+}
 
 fn fmt_db(v: f32) -> String {
     format!("{v:.0} dB").replace('-', "−")
@@ -888,7 +898,7 @@ impl MainView {
                 this.import_notice = Some(match engine::wav::read_mono(&path, engine::SAMPLE_RATE as f32, max) {
                     Ok((samples, _)) => {
                         let secs = this.state.read(cx).engine.tap().load_recording(&samples);
-                        (Severity::Success, format!("Loaded {secs:.1} s into Audition."), "Press Play to hear it through the chain.".into())
+                        (Severity::Success, format!("Loaded {secs:.1} s into Audition."), "Select Play to hear it through the effects.".into())
                     }
                     Err(e) => (Severity::Error, "Couldn’t load that file.".into(), e),
                 });
@@ -913,7 +923,7 @@ impl MainView {
         let mut voiced: Vec<f32> = c.talk.iter().copied().filter(|v| *v > noise + 10.0).collect();
         if voiced.len() < 10 {
             self.mic_calib_result = Some((
-                format!("Couldn’t hear your voice above the room noise ({}). Check the mic and its gain, then try again.", fmt_db(noise)),
+                format!("No speech detected above the background noise ({}). Check the input level and try again.", fmt_db(noise)),
                 false,
             ));
             cx.notify();
@@ -946,11 +956,11 @@ impl MainView {
                 match &mut slot.effect {
                     E::Expander(e) => {
                         e.threshold_db = expander_thr;
-                        touched.push(format!("expander {}", fmt_db(expander_thr)));
+                        touched.push(format!("Expander {}", fmt_db(expander_thr)));
                     }
                     E::Gate(g) => {
                         g.threshold_db = gate_thr;
-                        touched.push(format!("gate {}", fmt_db(gate_thr)));
+                        touched.push(format!("Gate {}", fmt_db(gate_thr)));
                     }
                     _ => {}
                 }
@@ -960,7 +970,7 @@ impl MainView {
 
         let gap = speech - noise;
         let mut msg = format!(
-            "Voice {} · room {} → trim {}{}.",
+            "Speech {} · noise {} → Gain {}{}.",
             fmt_db(speech),
             fmt_db(noise),
             params::format(params::Unit::Db, trim),
@@ -969,7 +979,7 @@ impl MainView {
         let ok = gap >= 25.0;
         if !ok {
             msg.push_str(&format!(
-                " Background noise is only {gap:.0} dB below your voice — open-back headphones leaking, a fan, or the mic too far away? Lower the headphone volume or move closer, then calibrate again."
+                " The noise is only {gap:.0} dB below speech. Reduce background noise or move closer to the mic, then calibrate again."
             ));
         }
         self.mic_calib_result = Some((msg, ok));
@@ -1003,11 +1013,11 @@ impl MainView {
         }
         let f = |v: f32| format!("{v:.0} dB").replace('-', "−");
         let (msg, ok) = if gap >= 10.0 {
-            (format!("Room noise {} · your voice {} → threshold set to {}.", f(noise), f(voice), f(threshold)), true)
+            (format!("Noise {} · speech {} → threshold {}.", f(noise), f(voice), f(threshold)), true)
         } else {
             (
                 format!(
-                    "Threshold set to {}, but your voice ({}) is only {:.0} dB above the room noise ({}). Raise the EVO's input gain or get closer to the mic, then calibrate again.",
+                    "Threshold set to {}, but speech ({}) is only {:.0} dB above the noise ({}). Raise the input level or move closer to the mic, then calibrate again.",
                     f(threshold), f(voice), gap.max(0.0), f(noise)
                 ),
                 false,
@@ -1123,18 +1133,18 @@ impl MainView {
         let has = tap.has_recording();
         let secs = tap.recorded_seconds();
         let caption = if recording {
-            format!("Recording… {secs:.1} s (up to {} s). Talk like you would in a call.", engine::tap::REC_SECONDS)
+            format!("Recording… {secs:.1} s of {} s", engine::tap::REC_SECONDS)
         } else if playing {
             format!(
-                "Looping {secs:.1} s through the chain on {} · the virtual mic is silent meanwhile",
-                audition_device.unwrap_or_else(|| "your headphones".into())
+                "Looping {secs:.1} s through the effects to {}. The output is muted meanwhile.",
+                audition_device.unwrap_or_else(|| "the default device".into())
             )
         } else if let Some(e) = audition_error {
-            format!("Couldn’t play: {e}")
+            format!("Couldn’t play the recording. {}", sentence(&e))
         } else if has {
-            format!("{secs:.1} s recorded. Play it, then tweak the chain while it loops.")
+            format!("{secs:.1} s recorded. Play it and adjust the effects while it loops.")
         } else {
-            "Record a few seconds of your voice, then loop it through the chain while you tune it.".into()
+            "Record a short clip, then loop it through the effects while you adjust them.".into()
         };
 
         let segment = |id: &'static str, label: &'static str, active: bool| {
@@ -1183,7 +1193,7 @@ impl MainView {
                 fluent::button("rec", cx)
                     .when(recording, |b| b.text_color(p.critical))
                     .child(fluent::glyph(if recording { g::STOP } else { g::RECORD }, 12.))
-                    .child(if recording { "Stop" } else if has { "Re-record" } else { "Record" })
+                    .child(if recording { "Stop" } else if has { "Record again" } else { "Record" })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_record(cx))),
             )
             .when(has && !recording, |d| {
@@ -1191,14 +1201,14 @@ impl MainView {
                     fluent::subtle_button("rec-save", cx)
                         .child(fluent::glyph(g::SAVE, 12.))
                         .child("Save")
-                        .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Save the raw recording as a WAV file").build(w, cx))
+                        .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Save the unprocessed recording as a WAV file").build(w, cx))
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_recording(cx))),
                 )
             })
             .child(
-                fluent::subtle_button("rec-load", cx)
+                fluent::button("rec-load", cx)
                     .child("Load…")
-                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Audition a WAV file instead of a recording").build(w, cx))
+                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Loop a WAV file instead of a recording").build(w, cx))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.load_recording(window, cx))),
             )
             .child(
@@ -1239,7 +1249,7 @@ impl MainView {
     fn render_ir_picker(&self, slot_id: u32, path: &str, cx: &mut Context<Self>) -> AnyElement {
         let p = fl(cx).clone();
         let (text, color) = if path.is_empty() {
-            ("Choose a .wav impulse response — a room, a mic, a speaker cabinet.".to_string(), p.text2)
+            ("Choose an impulse response (.wav): a room, a microphone or a speaker cabinet.".to_string(), p.text2)
         } else {
             let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
             match engine::dsp::convolver::kernel(path, engine::SAMPLE_RATE as f32) {
@@ -1264,13 +1274,13 @@ impl MainView {
             .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
             .child(
                 fluent::button(("choose-ir", slot_id as usize), cx)
-                    .child("Choose IR…")
+                    .child("Choose file…")
                     .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
                         let rx = cx.prompt_for_paths(PathPromptOptions {
                             files: true,
                             directories: false,
                             multiple: false,
-                            prompt: Some("Use as impulse response".into()),
+                            prompt: Some("Choose".into()),
                         });
                         cx.spawn_in(window, async move |this, cx| {
                             if let Ok(Ok(Some(paths))) = rx.await {
@@ -1300,13 +1310,13 @@ impl MainView {
             (Some(c), _) => {
                 let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32().ceil();
                 if c.talking {
-                    (format!("Now talk normally… {left:.0}"), p.accent_text)
+                    (format!("Now speak normally… {left:.0}"), p.accent_text)
                 } else {
-                    (format!("Stay quiet — measuring room noise… {left:.0}"), p.accent_text)
+                    (format!("Stay quiet — measuring background noise… {left:.0}"), p.accent_text)
                 }
             }
             (None, Some((id, msg, ok))) if *id == slot_id => (msg.clone(), if *ok { p.success } else { p.caution }),
-            _ => ("Measure your room’s noise and your voice to set the threshold automatically.".to_string(), p.text2),
+            _ => ("Set the threshold from your background noise and speech level.".to_string(), p.text2),
         };
         div()
             .flex()
@@ -1318,7 +1328,7 @@ impl MainView {
             .child(
                 fluent::button(("calibrate", slot_id as usize), cx)
                     .when(busy.is_some(), |b| b.opacity(0.5))
-                    .child(if busy.is_some() { "Calibrating…" } else { "Auto-set threshold" })
+                    .child(if busy.is_some() { "Listening…" } else { "Calibrate" })
                     .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                         if this.calib.is_none() {
                             this.start_calibration(slot_id, cx);
@@ -1393,13 +1403,13 @@ impl MainView {
         match st.state {
             RunState::Running => fluent::info_bar(
                 if dropouts > 0 { Severity::Warning } else { Severity::Success },
-                "Processing",
+                "Active",
                 format!(
                     "{} · {}",
                     match (self.measured_latency_ms(), self.latency_estimate_ms(cx)) {
-                        (Some(m), _) => format!("{m:.0} ms measured latency"),
-                        (None, Some(e)) => format!("~{e:.0} ms in WinFX"),
-                        _ => format!("~{:.0} ms added latency", st.latency_ms),
+                        (Some(m), _) => format!("{m:.0} ms latency"),
+                        (None, Some(e)) => format!("~{e:.0} ms latency"),
+                        _ => format!("~{:.0} ms latency", st.latency_ms),
                     },
                     match dropouts {
                         0 => "no dropouts".to_string(),
@@ -1410,11 +1420,11 @@ impl MainView {
                 cx,
             )
             .into_any_element(),
-            RunState::Starting => fluent::info_bar(Severity::Info, "Starting", "Opening audio devices…".into(), cx).into_any_element(),
+            RunState::Starting => fluent::info_bar(Severity::Info, "Starting", "Opening devices…".into(), cx).into_any_element(),
             RunState::Retrying => fluent::info_bar(
                 Severity::Error,
-                "Not processing",
-                st.last_error.clone().unwrap_or_else(|| "Retrying…".into()),
+                "Not running",
+                st.last_error.as_deref().map(sentence).unwrap_or_else(|| "Retrying…".into()),
                 cx,
             )
             .into_any_element(),
@@ -1458,13 +1468,13 @@ impl MainView {
                 (Some(c), _) => {
                     let left = c.until.saturating_duration_since(Instant::now()).as_secs_f32().ceil();
                     if c.talking {
-                        (format!("Now talk normally, at your usual distance… {left:.0}"), p.accent_text)
+                        (format!("Now speak normally… {left:.0}"), p.accent_text)
                     } else {
-                        (format!("Stay quiet — measuring the room… {left:.0}"), p.accent_text)
+                        (format!("Stay quiet — measuring background noise… {left:.0}"), p.accent_text)
                     }
                 }
                 (None, Some((msg, ok))) => (msg.clone(), if *ok { p.success } else { p.caution }),
-                _ => ("Changed the mic gain? Calibrate so the chain fits your level again.".to_string(), p.text2),
+                _ => ("Fit the effects to your input level.".to_string(), p.text2),
             };
             let busy = self.mic_calib.is_some();
             div()
@@ -1479,7 +1489,7 @@ impl MainView {
                         .child(if busy { "Listening…" } else { "Calibrate" })
                         .tooltip(|w, cx| {
                             gpui_component::tooltip::Tooltip::new(
-                                "4 s of quiet, then 5 s of talking. Sets the chain's trim so your voice sits at −20 dBFS, and the expander/gate thresholds from your room noise.",
+                                "Listens to 4 s of silence, then 5 s of speech. Sets the first Gain effect so speech sits at −20 dBFS, and the Gate and Expander thresholds just above the background noise.",
                             )
                             .build(w, cx)
                         })
@@ -1495,8 +1505,8 @@ impl MainView {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(header(icon_glyph(g::MIC), "Microphone", input_caption))
-            .child(Select::new(&self.input_sel).placeholder("Choose microphone"))
+            .child(header(icon_glyph(g::MIC), "Input", input_caption))
+            .child(Select::new(&self.input_sel).placeholder("Choose a device"))
             .child(fluent::level_meter("Input level", self.levels.in_peak, self.levels.in_rms, cx))
             .child(mic_calib_row)
             .child(
@@ -1505,7 +1515,7 @@ impl MainView {
                     .items_center()
                     .justify_between()
                     .child("Exclusive mode")
-                    .child(fluent::switch("exclusive", exclusive, "Lower latency; other apps can't open this mic directly", cx, {
+                    .child(fluent::switch("exclusive", exclusive, "Lower latency. Other apps can’t use this device while WinFX is running.", cx, {
                         let state = self.state.clone();
                         move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_input = on))
                     })),
@@ -1513,29 +1523,29 @@ impl MainView {
 
         let exclusive_out = s.config.engine.exclusive_output;
         let output_caption = match &self.status.output {
-            Some(o) if o.exclusive => format!("Exclusive · {:.1} ms period · pick “CABLE Output” in Discord", o.period_frames as f32 / 48.0),
-            Some(o) => format!("Shared · {:.1} ms period · pick “CABLE Output” in Discord", o.period_frames as f32 / 48.0),
-            None => "In Discord, pick “CABLE Output”".into(),
+            Some(o) if o.exclusive => format!("Exclusive · {:.1} ms period", o.period_frames as f32 / 48.0),
+            Some(o) => format!("Shared · {:.1} ms period", o.period_frames as f32 / 48.0),
+            None => "Not connected".into(),
         };
         let measuring = self.status.latency_test == engine::LatencyTest::Running;
         let margin_ms = s.engine.meters().margin_frames.load(Relaxed) as f32 / 48.0;
         let (latency_line, latency_detail, latency_detail_color) = match &self.status.latency_test {
             engine::LatencyTest::Done { path_ms, min_ms, max_ms, chain_ms, trials } => (
-                format!("Latency: {:.1} ms measured", path_ms + chain_ms),
+                format!("Latency: {:.1} ms", path_ms + chain_ms),
                 format!(
-                    "Mic capture → CABLE Output, median of {trials} ({:.1}–{:.1} ms) · buffer margin {margin_ms:.1} ms",
+                    "Input to output, median of {trials} ({:.1}–{:.1} ms) · {margin_ms:.1} ms safety buffer",
                     min_ms + chain_ms,
                     max_ms + chain_ms
                 ),
                 p.text2,
             ),
-            engine::LatencyTest::Failed(e) => ("Latency: couldn’t measure".to_string(), e.clone(), p.critical),
+            engine::LatencyTest::Failed(e) => ("Latency: measurement failed".to_string(), sentence(e), p.critical),
             _ => (
                 match self.latency_estimate_ms(cx) {
-                    Some(e) => format!("Latency: ~{e:.0} ms in WinFX"),
+                    Some(e) => format!("Latency: ~{e:.0} ms"),
                     None => "Latency: —".into(),
                 },
-                format!("Buffer margin {margin_ms:.1} ms, adapts to dropouts · Measure for the full path"),
+                "Processing only. Measure to include the devices.".to_string(),
                 p.text2,
             ),
         };
@@ -1544,8 +1554,8 @@ impl MainView {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(header(plug, "Virtual microphone", output_caption))
-            .child(Select::new(&self.output_sel).placeholder("Choose output"))
+            .child(header(plug, "Output", output_caption))
+            .child(Select::new(&self.output_sel).placeholder("Choose a device"))
             .child(fluent::level_meter("Output level", self.levels.out_peak, self.levels.out_rms, cx))
             .child(
                 div()
@@ -1556,7 +1566,7 @@ impl MainView {
                     .child(fluent::switch(
                         "exclusive-out",
                         exclusive_out,
-                        "Lowest latency; only WinFX can play into the cable",
+                        "Lower latency. Other apps can’t play to this device while WinFX is running.",
                         cx,
                         {
                             let state = self.state.clone();
@@ -1584,7 +1594,7 @@ impl MainView {
                             .child(if measuring { "Measuring…" } else { "Measure" })
                             .tooltip(|w, cx| {
                                 gpui_component::tooltip::Tooltip::new(
-                                    "Sends 5 short clicks through the virtual mic and times them. Anyone listening to CABLE Output will hear them.",
+                                    "Plays 5 short clicks through the output and times their arrival. Anything recording from the output will hear them.",
                                 )
                                 .build(w, cx)
                             })
@@ -1597,9 +1607,9 @@ impl MainView {
             );
 
         let mon_caption = match (&self.status.monitor, &self.status.monitor_error) {
-            _ if !mon.enabled => "Hear yourself through headphones".to_string(),
-            (Some(_), _) => format!("~{:.0} ms to headphones · processed", self.status.monitor_latency_ms),
-            (None, Some(e)) => e.clone(),
+            _ if !mon.enabled => "Listen to the processed signal".to_string(),
+            (Some(_), _) => format!("~{:.0} ms latency", self.status.monitor_latency_ms),
+            (None, Some(e)) => sentence(e),
             _ => "Starting…".into(),
         };
         let monitor_card = fluent::card(cx)
@@ -1611,7 +1621,7 @@ impl MainView {
                 header(icon_glyph(g::HEADPHONE), "Monitor", mon_caption).child(fluent::switch(
                     "monitor",
                     mon.enabled,
-                    "Hear the processed mic",
+                    "Listen to the processed signal",
                     cx,
                     {
                         let state = self.state.clone();
@@ -1620,7 +1630,7 @@ impl MainView {
                 )),
             )
             .when(mon.enabled, |d| {
-                d.child(Select::new(&self.monitor_sel).placeholder("Headphones")).child(
+                d.child(Select::new(&self.monitor_sel).placeholder("Choose a device")).child(
                     div()
                         .flex()
                         .items_center()
@@ -1649,7 +1659,7 @@ impl MainView {
                         .flex_col()
                         .flex_1()
                         .child("Start at login")
-                        .child(fluent::caption("Opens in the tray and starts processing", cx)),
+                        .child(fluent::caption("Runs in the notification area", cx)),
                 )
                 .child(fluent::switch("autostart", self.autostart, "Start WinFX when you sign in", cx, {
                     let view = cx.entity();
@@ -1679,11 +1689,11 @@ impl MainView {
                     .pt(px(4.))
                     .pb(px(24.))
                     .child(status)
-                    .child(fluent::section_title("Signal", cx))
+                    .child(fluent::section_title("Devices", cx))
                     .child(mic_card)
                     .child(cable_card)
                     .child(monitor_card)
-                    .child(fluent::section_title("App", cx))
+                    .child(fluent::section_title("General", cx))
                     .child(app_card),
             )
             .overflow_y_scrollbar()
@@ -1715,7 +1725,7 @@ impl MainView {
                 .w(px(280.))
                 .p(px(12.))
                 .gap(px(8.))
-                .child(div().text_xs().text_color(p.text2).child("Save the current chain as a new preset"))
+                .child(div().text_xs().text_color(p.text2).child("Save the current effects as a new preset"))
                 .child(Input::new(&self.preset_name))
                 .child(
                     div().flex().justify_end().child(
@@ -1749,20 +1759,8 @@ impl MainView {
                 fluent::button("save", cx)
                     .child(fluent::glyph(g::SAVE, 14.))
                     .child("Save")
-                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Overwrite the selected preset").build(w, cx))
+                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Save changes to this preset").build(w, cx))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.overwrite_preset(cx))),
-            )
-            .child(
-                fluent::button("import", cx)
-                    .child(fluent::glyph(g::IMPORT, 14.))
-                    .child("Import…")
-                    .tooltip(|w, cx| {
-                        gpui_component::tooltip::Tooltip::new(
-                            "Load an EasyEffects preset (.json) or an Equalizer APO / AutoEQ file (.txt). You can also drop files on the window.",
-                        )
-                        .build(w, cx)
-                    })
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.pick_import(window, cx))),
             )
             .child(
                 div()
@@ -1777,6 +1775,18 @@ impl MainView {
                         },
                     )))
                     .children(save_as.map(|m| anchor_below(m))),
+            )
+            .child(
+                fluent::button("import", cx)
+                    .child(fluent::glyph(g::IMPORT, 14.))
+                    .child("Import…")
+                    .tooltip(|w, cx| {
+                        gpui_component::tooltip::Tooltip::new(
+                            "Import an EasyEffects preset (.json) or an Equalizer APO / AutoEQ file (.txt). You can also drop files on the window.",
+                        )
+                        .build(w, cx)
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.pick_import(window, cx))),
             )
             .child(
                 div()
@@ -1815,54 +1825,16 @@ impl MainView {
                     .into_any_element(),
             );
         }
-        let s = self.state.read(cx);
         if let Some(why) = self.status.input.as_ref().and_then(|i| i.exclusive_fallback.as_ref()) {
             out.push(
                 fluent::info_bar(
                     Severity::Warning,
-                    "Mic is shared.",
-                    format!("Exclusive mode failed ({why}), so latency is higher."),
+                    "Input is in shared mode.",
+                    format!("Exclusive mode isn’t available ({why}), so latency is higher."),
                     cx,
                 )
                 .into_any_element(),
             );
-        }
-        if let Some(c) = &s.comms_input {
-            let dismissed = s.config.dismissed_comms_warning.as_deref() == Some(c.name.as_str());
-            if !is_cable(c) && !dismissed {
-                let name = c.name.clone();
-                let p = fl(cx).clone();
-                out.push(
-                    fluent::info_bar(
-                        Severity::Info,
-                        "Some apps use the communications mic.",
-                        format!("Windows’ default communications device is “{}”. Select CABLE Output in those apps, or change it in Sound settings.", c.name),
-                        cx,
-                    )
-                    .child(
-                        fluent::subtle_button("open-sound", cx)
-                            .text_color(p.accent_text)
-                            .child("Sound settings")
-                            .on_click(|_, _, cx| cx.open_url("ms-settings:sound")),
-                    )
-                    .child(
-                        fluent::subtle_button("dismiss-comms", cx)
-                            .w(px(32.))
-                            .justify_center()
-                            .child(fluent::glyph(g::CANCEL, 10.))
-                            .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Dismiss").build(w, cx))
-                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                let name = name.clone();
-                                this.state.update(cx, |s, _| {
-                                    s.config.dismissed_comms_warning = Some(name);
-                                    s.save();
-                                });
-                                cx.notify();
-                            })),
-                    )
-                    .into_any_element(),
-                );
-            }
         }
         out
     }
@@ -2131,7 +2103,7 @@ impl MainView {
             .child(band_bar)
             .child(editor)
             .children(output)
-            .child(fluent::caption("Drag the points to change frequency and gain; scroll over the graph to change Q.", cx))
+            .child(fluent::caption("Drag a point to set frequency and gain. Scroll over the graph to set Q.", cx))
             .into_any_element()
     }
 
@@ -2204,7 +2176,7 @@ impl MainView {
                         .text_xs()
                         .text_right()
                         .text_color(p.text2)
-                        .child(if hz > 0.0 { format!("hearing {}", params::note_name(hz)) } else { "listening…".into() }),
+                        .child(if hz > 0.0 { format!("Pitch {}", params::note_name(hz)) } else { "No pitch".into() }),
                 )
             })
             .when(matches!(slot.effect, EffectConfig::Autogain(_)) && on, |d| {
@@ -2216,7 +2188,7 @@ impl MainView {
                         .text_xs()
                         .text_right()
                         .text_color(p.text2)
-                        .child(format!("now {}", params::format(params::Unit::Db, g))),
+                        .child(format!("Gain {}", params::format(params::Unit::Db, g))),
                 )
             })
             .when(params::has_gr(&slot.effect) && on, |d| {
@@ -2243,7 +2215,7 @@ impl MainView {
                                 .text_xs()
                                 .text_right()
                                 .text_color(p.text2)
-                                .child(format!("−{gr:.1} dB")),
+                                .child(if gr < 0.05 { "0.0 dB".to_string() } else { format!("−{gr:.1} dB") }),
                         ),
                 )
             })
@@ -2436,7 +2408,7 @@ impl Render for MainView {
                                                 fluent::card(cx)
                                                     .p(px(24.))
                                                     .text_color(p.text2)
-                                                    .child("No effects yet. Use Add effect to build a chain."),
+                                                    .child("No effects yet. Select Add effect to build a chain."),
                                             )
                                         }),
                                 )

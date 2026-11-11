@@ -96,7 +96,7 @@ impl Tray {
         let menu = Menu::new();
         menu.append_items(&[&show, &bypass, &PredefinedMenuItem::separator(), &quit])?;
         let icon = TrayIconBuilder::new()
-            .with_tooltip("WinFX — mic processor")
+            .with_tooltip("WinFX")
             .with_icon(make_icon())
             .with_menu(Box::new(menu))
             .with_menu_on_left_click(false)
