@@ -22,6 +22,7 @@ use wasapi::{
 const EVENT_TIMEOUT_MS: u32 = 200;
 /// Consecutive stalls before the stream is declared dead and restarted.
 const MAX_STALLS: u32 = 10;
+const STARTUP_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Shared between the control thread and one capture+render pair.
 #[derive(Default)]
@@ -418,6 +419,7 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
     let avail = op.client.get_available_space_in_frames()? as usize;
     rc.write_to_device(&bytes[..avail * block_align], None)?;
     op.client.start_stream()?;
+    let started = std::time::Instant::now();
 
     let mut stalls = 0;
     while !a.session.stop.load(Relaxed) {
@@ -441,7 +443,8 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
         }
         let block = &mut mono[..avail];
         let stats = rs.render(&mut a.ring, block);
-        if stats.underrun {
+        // The first moments after start are settling, not dropouts worth reporting.
+        if stats.underrun && started.elapsed() > STARTUP_GRACE {
             a.meters.underruns.fetch_add(1, Relaxed);
         }
         if stats.dropped > 0 {
