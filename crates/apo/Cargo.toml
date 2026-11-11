@@ -1,0 +1,21 @@
+[package]
+name = "winfx-apo"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "winfx_apo"
+crate-type = ["cdylib"]
+
+[dependencies]
+windows-core = "0.62"
+windows = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Apo",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell_PropertiesSystem",
+] }
