@@ -15,6 +15,9 @@ pub struct AppConfig {
     /// Last window position/size, restored on open.
     #[serde(default)]
     pub window: Option<SavedWindow>,
+    /// The communications-device warning was dismissed for this device name.
+    #[serde(default)]
+    pub dismissed_comms_warning: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -33,6 +36,8 @@ pub struct AppState {
     pub outputs: Vec<DeviceInfo>,
     pub comms_input: Option<DeviceInfo>,
     pub presets: Vec<String>,
+    /// Preview mode: synthetic engine, nothing is written to disk.
+    pub preview: bool,
     dirty_since: Option<Instant>,
 }
 
@@ -54,24 +59,32 @@ pub fn is_cable(d: &DeviceInfo) -> bool {
 }
 
 impl AppState {
-    pub fn load() -> Self {
+    pub fn load(preview: bool) -> Self {
         let saved: Option<AppConfig> = std::fs::read_to_string(config_path())
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok());
         let first_run = saved.is_none();
         let mut config =
-            saved.unwrap_or(AppConfig { engine: EngineConfig::default(), preset: None, window: None });
+            saved.unwrap_or(AppConfig {
+            engine: EngineConfig::default(),
+            preset: None,
+            window: None,
+            dismissed_comms_warning: None,
+        });
+        let first_run = first_run && !preview;
 
         let mut s = AppState {
-            engine: Engine::start(EngineConfig {
-                // Start idle-safe: real config applied below once devices are known.
-                ..config.engine.clone()
-            }),
+            engine: if preview {
+                Engine::start_preview(config.engine.clone())
+            } else {
+                Engine::start(config.engine.clone())
+            },
             config: config.clone(),
             inputs: vec![],
             outputs: vec![],
             comms_input: None,
             presets: vec![],
+            preview,
             dirty_since: None,
         };
         s.refresh_devices();
@@ -171,6 +184,9 @@ impl AppState {
 
     pub fn save(&mut self) {
         self.dirty_since = None;
+        if self.preview {
+            return;
+        }
         let _ = std::fs::create_dir_all(data_dir());
         if let Ok(json) = serde_json::to_string_pretty(&self.config) {
             let tmp = config_path().with_extension("json.tmp");
@@ -181,6 +197,9 @@ impl AppState {
     }
 
     pub fn save_preset(&mut self, name: &str) {
+        if self.preview {
+            return;
+        }
         let _ = std::fs::create_dir_all(presets_dir());
         if let Ok(json) = serde_json::to_string_pretty(self.chain()) {
             let _ = std::fs::write(presets_dir().join(format!("{}.json", sanitize(name))), json);

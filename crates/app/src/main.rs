@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod assets;
+mod fluent;
 mod params;
 mod state;
 mod system;
@@ -7,15 +9,16 @@ mod ui;
 
 use gpui::{
     point, px, size, App, AppContext as _, Bounds, Entity, Global, QuitMode, TitlebarOptions,
-    Window, WindowBounds, WindowHandle, WindowOptions,
+    Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions,
 };
-use gpui_component::{Root, Theme, ThemeMode};
+use gpui_component::Root;
 use state::AppState;
 use std::time::Duration;
 use system::{Tray, TrayAction};
 
 struct AppGlobal {
     state: Entity<AppState>,
+    preview: bool,
     tray: Option<Tray>,
     window: Option<WindowHandle<Root>>,
 }
@@ -23,29 +26,38 @@ struct AppGlobal {
 impl Global for AppGlobal {}
 
 fn main() {
-    if !system::claim_single_instance() {
-        system::signal_show_existing();
+    // --preview: synthetic engine, no tray, nothing saved, opened off-screen
+    // without focus. For developing the UI while the real app holds the mic.
+    let preview = std::env::args().any(|a| a == "--preview");
+    if !system::claim_single_instance(if preview { "WinFX-preview" } else { "WinFX-single-instance" }) {
+        if !preview {
+            system::signal_show_existing();
+        }
         return;
     }
     let hidden = std::env::args().any(|a| a == "--hidden");
 
     gpui_platform::application()
-        .with_assets(gpui_kit_assets::Assets)
+        .with_assets(assets::Assets)
         .with_quit_mode(QuitMode::Explicit)
         .run(move |cx: &mut App| {
             gpui_component::init(cx);
-            Theme::change(ThemeMode::Dark, None, cx);
+            fluent::sync_app(cx);
 
-            let state = cx.new(|_| AppState::load());
-            let tray = match Tray::new() {
-                Ok(t) => Some(t),
-                Err(e) => {
-                    eprintln!("tray icon unavailable: {e}");
-                    None
+            let state = cx.new(|_| AppState::load(preview));
+            let tray = if preview {
+                None
+            } else {
+                match Tray::new() {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        eprintln!("tray icon unavailable: {e}");
+                        None
+                    }
                 }
             };
             let no_tray = tray.is_none();
-            cx.set_global(AppGlobal { state, tray, window: None });
+            cx.set_global(AppGlobal { state, preview, tray, window: None });
 
             cx.on_window_closed(|cx, id| {
                 let g = cx.global_mut::<AppGlobal>();
@@ -91,14 +103,24 @@ fn open_main_window(cx: &mut App) {
         }
     }
     let state = cx.global::<AppGlobal>().state.clone();
+    let preview = cx.global::<AppGlobal>().preview;
     let saved = state.read(cx).config.window;
+    let bounds = if preview {
+        // Off-screen so screenshots (PrintWindow) don't cover the user's work.
+        WindowBounds::Windowed(Bounds { origin: point(px(-4000.), px(80.)), size: size(px(1280.), px(860.)) })
+    } else {
+        restore_bounds(saved, cx)
+    };
     let opts = WindowOptions {
-        window_bounds: Some(restore_bounds(saved, cx)),
-        titlebar: Some(TitlebarOptions { title: Some("WinFX".into()), ..Default::default() }),
-        window_min_size: Some(size(px(860.), px(520.))),
+        window_bounds: Some(bounds),
+        titlebar: Some(TitlebarOptions { title: Some("WinFX".into()), appears_transparent: true, ..Default::default() }),
+        window_background: WindowBackgroundAppearance::MicaBackdrop,
+        window_min_size: Some(size(px(960.), px(600.))),
+        focus: !preview,
         ..Default::default()
     };
     let handle = cx.open_window(opts, |window, cx| {
+        fluent::sync(window, cx);
         let st = state.clone();
         window.on_window_should_close(cx, move |window, cx| {
             remember_bounds(&st, window, cx);
@@ -110,7 +132,9 @@ fn open_main_window(cx: &mut App) {
     match handle {
         Ok(h) => {
             cx.global_mut::<AppGlobal>().window = Some(h);
-            cx.activate(true);
+            if !preview {
+                cx.activate(true);
+            }
         }
         Err(e) => eprintln!("failed to open window: {e}"),
     }
@@ -128,6 +152,9 @@ fn restore_bounds(saved: Option<state::SavedWindow>, cx: &App) -> WindowBounds {
 }
 
 fn remember_bounds(state: &Entity<AppState>, window: &Window, cx: &mut App) {
+    if state.read(cx).preview {
+        return;
+    }
     let wb = window.window_bounds();
     let b = wb.get_bounds();
     let saved = state::SavedWindow {

@@ -30,6 +30,8 @@ pub enum ParamKey {
 pub enum Unit {
     Hz,
     Db,
+    /// A dB amount with no sign (hysteresis, range, knee).
+    DbAmount,
     Ms,
     Ratio,
     None,
@@ -74,11 +76,11 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             .collect(),
         EffectConfig::Gate(_) => vec![
             p(Threshold, "Threshold", Db, -80.0, 0.0, 0.5, false),
-            p(Hysteresis, "Hysteresis", Db, 0.0, 20.0, 0.5, false),
+            p(Hysteresis, "Hysteresis", DbAmount, 0.0, 20.0, 0.5, false),
             p(Attack, "Attack", Ms, 0.1, 50.0, 0.1, false),
             p(Hold, "Hold", Ms, 0.0, 500.0, 1.0, false),
             p(Release, "Release", Ms, 5.0, 1000.0, 1.0, false),
-            p(Range, "Range", Db, 0.0, 80.0, 0.5, false),
+            p(Range, "Range", DbAmount, 0.0, 80.0, 0.5, false),
             p(ScHpf, "Sidechain HPF", Hz, 20.0, 500.0, 1.0, true),
         ],
         EffectConfig::Compressor(_) => vec![
@@ -86,7 +88,7 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             p(ParamKey::Ratio, "Ratio", Unit::Ratio, 1.0, 20.0, 0.1, false),
             p(Attack, "Attack", Ms, 0.1, 100.0, 0.1, false),
             p(Release, "Release", Ms, 5.0, 1000.0, 1.0, false),
-            p(Knee, "Knee", Db, 0.0, 24.0, 0.5, false),
+            p(Knee, "Knee", DbAmount, 0.0, 24.0, 0.5, false),
             p(Rms, "RMS window", Ms, 0.1, 100.0, 0.1, false),
             p(Makeup, "Make-up", Db, 0.0, 24.0, 0.1, false),
         ],
@@ -185,7 +187,8 @@ pub fn format(unit: Unit, v: f32) -> String {
     match unit {
         Unit::Hz if v >= 1000.0 => format!("{:.2} kHz", v / 1000.0),
         Unit::Hz => format!("{v:.0} Hz"),
-        Unit::Db => format!("{v:+.1} dB"),
+        Unit::Db => format!("{v:+.1} dB").replace('-', "−"),
+        Unit::DbAmount => format!("{v:.1} dB"),
         Unit::Ms if v < 10.0 => format!("{v:.1} ms"),
         Unit::Ms => format!("{v:.0} ms"),
         Unit::Ratio => format!("{v:.1}:1"),
@@ -230,3 +233,43 @@ pub fn new_effect(kind: &str) -> Option<EffectConfig> {
 
 pub const ADDABLE: &[&str] =
     &["High-pass", "Low-pass", "Equalizer", "Gate", "Compressor", "Gain", "Limiter"];
+
+/// One-line card summary, e.g. "−28 dB · 3:1 · 5 / 120 ms".
+pub fn summary(cfg: &EffectConfig) -> String {
+    let db = |v: f32| format!("{v:.1} dB").replace('-', "−");
+    let s = match cfg {
+        EffectConfig::Filter(f) => format!("{} · Q {:.2}", format(Unit::Hz, f.freq_hz), f.q),
+        EffectConfig::Eq(e) => {
+            let on = e.bands.iter().filter(|b| b.enabled).count();
+            format!("{on} band{}", if on == 1 { "" } else { "s" })
+        }
+        EffectConfig::Gate(g) => format!("{} threshold · {:.0} dB range", db(g.threshold_db), g.range_db),
+        EffectConfig::Compressor(c) => format!(
+            "{} · {:.1}:1 · {} / {} ms",
+            db(c.threshold_db),
+            c.ratio,
+            trim(c.attack_ms),
+            trim(c.release_ms)
+        ),
+        EffectConfig::Gain(g) => format(Unit::Db, g.gain_db),
+        EffectConfig::Limiter(l) => format!("Ceiling {} · {} ms look-ahead", db(l.ceiling_db), trim(l.lookahead_ms)),
+    };
+    s.replace("+-", "−")
+}
+
+fn trim(v: f32) -> String {
+    if (v - v.round()).abs() < 0.05 { format!("{v:.0}") } else { format!("{v:.1}") }
+}
+
+/// Icon asset for the effect's card.
+pub fn icon(cfg: &EffectConfig) -> &'static str {
+    match cfg {
+        EffectConfig::Filter(f) if f.kind == FilterKind::LowPass => "winfx/lowpass.svg",
+        EffectConfig::Filter(_) => "winfx/highpass.svg",
+        EffectConfig::Eq(_) => "winfx/eq.svg",
+        EffectConfig::Gate(_) => "winfx/gate.svg",
+        EffectConfig::Compressor(_) => "winfx/compressor.svg",
+        EffectConfig::Gain(_) => "winfx/gain.svg",
+        EffectConfig::Limiter(_) => "winfx/limiter.svg",
+    }
+}

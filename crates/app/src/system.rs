@@ -16,9 +16,9 @@ const RUN_VALUE: PCWSTR = w!("WinFX");
 
 /// Returns false if another instance already holds the mutex.
 /// The handle is leaked on purpose: it must live as long as the process.
-pub fn claim_single_instance() -> bool {
-    let h: windows::core::Result<HANDLE> =
-        unsafe { CreateMutexW(None, true, w!("Local\\WinFX-single-instance")) };
+pub fn claim_single_instance(name: &str) -> bool {
+    let wide: Vec<u16> = format!("Local\\{name}").encode_utf16().chain(Some(0)).collect();
+    let h: windows::core::Result<HANDLE> = unsafe { CreateMutexW(None, true, PCWSTR(wide.as_ptr())) };
     h.is_ok() && unsafe { GetLastError() } != ERROR_ALREADY_EXISTS
 }
 

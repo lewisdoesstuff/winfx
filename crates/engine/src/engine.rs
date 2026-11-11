@@ -173,6 +173,16 @@ pub struct Engine {
 
 impl Engine {
     pub fn start(config: EngineConfig) -> Engine {
+        Self::start_inner(config, false)
+    }
+
+    /// No audio devices are opened; status reports a plausible running state
+    /// and meters show synthetic levels. For UI previews/screenshots.
+    pub fn start_preview(config: EngineConfig) -> Engine {
+        Self::start_inner(config, true)
+    }
+
+    fn start_inner(config: EngineConfig, preview: bool) -> Engine {
         let (tx, rx) = mpsc::channel();
         let meters = Arc::new(Meters::default());
         let status = Arc::new(Mutex::new(Status::default()));
@@ -182,7 +192,7 @@ impl Engine {
             let ctx = Ctl { meters: meters.clone(), status: status.clone(), monitor_gain: monitor_gain.clone() };
             std::thread::Builder::new()
                 .name("winfx-control".into())
-                .spawn(move || control_loop(config, rx, ctx))
+                .spawn(move || if preview { preview_loop(config, rx, ctx) } else { control_loop(config, rx, ctx) })
                 .expect("spawn control thread")
         };
         Engine { tx, meters, status, monitor_gain, thread: Some(thread) }
@@ -451,6 +461,70 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     let mut s = ctl.status.lock().unwrap();
     s.state = RunState::Stopped;
     s.monitor = None;
+}
+
+/// Preview mode: no devices, a believable running status, and meters driven by
+/// a synthetic speech-like envelope so the UI can be developed and screenshotted
+/// while the real app holds the mic.
+fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
+    let fake = |name: &str, ch: u16, period: u32, exclusive: bool| StreamInfo {
+        id: format!("preview:{name}"),
+        name: name.into(),
+        channels: ch,
+        device_rate: SAMPLE_RATE,
+        period_frames: period,
+        low_latency: true,
+        exclusive,
+        exclusive_fallback: None,
+        stream_latency_ms: 0.0,
+    };
+    let monitor_info = || fake("Main Output 1/2 (Audient EVO4)", 2, 480, false);
+    {
+        let mut s = ctl.status.lock().unwrap();
+        s.state = RunState::Running;
+        s.input = Some(fake("Mic | Line | Instrument 1 (Audient EVO4)", 1, 144, true));
+        s.output = Some(fake("CABLE Input (VB-Audio Virtual Cable)", 2, 128, false));
+        s.latency_ms = 14.0;
+        s.monitor = config.monitor.enabled.then(monitor_info);
+        s.monitor_latency_ms = 28.0;
+    }
+    let started = Instant::now();
+    loop {
+        match rx.recv_timeout(Duration::from_millis(20)) {
+            Ok(Cmd::SetChain(c)) => config.chain = c,
+            Ok(Cmd::SetConfig(c)) => config = c,
+            Ok(Cmd::SetMonitor(m)) => {
+                config.monitor = m;
+                ctl.status.lock().unwrap().monitor = config.monitor.enabled.then(monitor_info);
+            }
+            Ok(Cmd::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+        }
+        // Syllables ~4 Hz inside phrases ~0.3 Hz, with a quiet room floor.
+        let t = started.elapsed().as_secs_f32();
+        let phrase = ((t * 0.3 * std::f32::consts::TAU).sin() * 0.5 + 0.5).powf(0.5);
+        let syl = ((t * 4.1 * std::f32::consts::TAU).sin() * 0.5 + 0.5).powi(2);
+        let talking = phrase > 0.35;
+        let in_db = if talking { -40.0 + 26.0 * syl * phrase } else { -66.0 };
+        let lin = crate::dsp::db_to_lin(in_db);
+        let m = &ctl.meters;
+        m.in_peak.raise(lin * 1.4);
+        m.in_rms.raise(lin);
+        let out = if talking { crate::dsp::db_to_lin(in_db + 18.0).min(0.89) } else { 0.0005 };
+        m.out_peak.raise(out * 1.3);
+        m.out_rms.raise(out);
+        for (i, slot) in config.chain.slots.iter().enumerate().take(crate::meters::MAX_SLOTS) {
+            let gr = match (&slot.effect, slot.bypass) {
+                (_, true) => 0.0,
+                (crate::chain::EffectConfig::Gate(g), _) => if talking { 0.0 } else { g.range_db },
+                (crate::chain::EffectConfig::Compressor(_), _) => if talking { 6.0 * syl * phrase } else { 0.0 },
+                (crate::chain::EffectConfig::Limiter(_), _) => if talking { 1.2 * syl * syl } else { 0.0 },
+                _ => 0.0,
+            };
+            m.gr[i].raise(gr);
+        }
+    }
+    ctl.status.lock().unwrap().state = RunState::Stopped;
 }
 
 fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, StreamInfo, StreamInfo)> {
