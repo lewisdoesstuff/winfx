@@ -330,9 +330,9 @@ pub fn switch(
         .bg(bg)
         .hover(move |s| s.bg(hover))
         .cursor_pointer()
-        .tooltip({
+        .when(!label.is_empty(), |d| {
             let label: SharedString = label.to_owned().into();
-            move |w, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(w, cx)
+            d.tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(w, cx))
         })
         .child(
             div()

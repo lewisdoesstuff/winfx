@@ -1142,7 +1142,7 @@ impl MainView {
         } else if let Some(e) = audition_error {
             format!("Couldn't play the recording. {}", sentence(&e))
         } else if has {
-            format!("{secs:.1} s recorded. Play it and adjust the effects while it loops.")
+            format!("{secs:.1} s recorded")
         } else {
             "Record a short clip, then loop it through the effects while you adjust them.".into()
         };
@@ -1208,7 +1208,6 @@ impl MainView {
             .child(
                 fluent::button("rec-load", cx)
                     .child("Load...")
-                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Loop a WAV file instead of a recording").build(w, cx))
                     .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.load_recording(window, cx))),
             )
             .child(
@@ -1235,7 +1234,7 @@ impl MainView {
                     .child(
                         segment("ab-b", "Original", self.ab_original)
                             .tooltip(|w, cx| {
-                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, level-matched to the processed sound so loudness doesn't bias the comparison").build(w, cx)
+                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, matched in loudness").build(w, cx)
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 if playing {
@@ -1249,7 +1248,7 @@ impl MainView {
     fn render_ir_picker(&self, slot_id: u32, path: &str, cx: &mut Context<Self>) -> AnyElement {
         let p = fl(cx).clone();
         let (text, color) = if path.is_empty() {
-            ("Choose an impulse response (.wav): a room, a microphone or a speaker cabinet.".to_string(), p.text2)
+            ("Choose a .wav impulse response.".to_string(), p.text2)
         } else {
             let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
             match engine::dsp::convolver::kernel(path, engine::SAMPLE_RATE as f32) {
@@ -1489,7 +1488,7 @@ impl MainView {
                         .child(if busy { "Listening..." } else { "Calibrate" })
                         .tooltip(|w, cx| {
                             gpui_component::tooltip::Tooltip::new(
-                                "Listens to 4 s of silence, then 5 s of speech. Sets the first Gain effect so speech sits at -20 dBFS, and the Gate and Expander thresholds just above the background noise.",
+                                "Changes the first Gain effect and the Gate and Expander thresholds."
                             )
                             .build(w, cx)
                         })
@@ -1594,7 +1593,7 @@ impl MainView {
                             .child(if measuring { "Measuring..." } else { "Measure" })
                             .tooltip(|w, cx| {
                                 gpui_component::tooltip::Tooltip::new(
-                                    "Plays 5 short clicks through the output and times their arrival. Anything recording from the output will hear them.",
+                                    "Plays 5 short clicks through the output. Anything recording from it will hear them.",
                                 )
                                 .build(w, cx)
                             })
@@ -1621,7 +1620,7 @@ impl MainView {
                 header(icon_glyph(g::HEADPHONE), "Monitor", mon_caption).child(fluent::switch(
                     "monitor",
                     mon.enabled,
-                    "Listen to the processed signal",
+                    "",
                     cx,
                     {
                         let state = self.state.clone();
@@ -1661,7 +1660,7 @@ impl MainView {
                         .child("Start at login")
                         .child(fluent::caption("Runs in the notification area", cx)),
                 )
-                .child(fluent::switch("autostart", self.autostart, "Start WinFX when you sign in", cx, {
+                .child(fluent::switch("autostart", self.autostart, "", cx, {
                     let view = cx.entity();
                     move |on, _, cx| {
                         view.update(cx, |this, cx| {
@@ -1725,7 +1724,6 @@ impl MainView {
                 .w(px(280.))
                 .p(px(12.))
                 .gap(px(8.))
-                .child(div().text_xs().text_color(p.text2).child("Save the current effects as a new preset"))
                 .child(Input::new(&self.preset_name))
                 .child(
                     div().flex().justify_end().child(
@@ -1759,7 +1757,6 @@ impl MainView {
                 fluent::button("save", cx)
                     .child(fluent::glyph(g::SAVE, 14.))
                     .child("Save")
-                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Save changes to this preset").build(w, cx))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.overwrite_preset(cx))),
             )
             .child(
@@ -2051,7 +2048,7 @@ impl MainView {
             .gap(px(12.))
             .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(format!("Band {}", sel + 1)))
             .children(self.eq.type_sel.as_ref().map(|s| div().w(px(160.)).child(Select::new(s))))
-            .child(fluent::switch("band-on", band_on, if band_on { "Turn this band off" } else { "Turn this band on" }, cx, {
+            .child(fluent::switch("band-on", band_on, "", cx, {
                 let view = cx.entity();
                 move |on, _, cx| {
                     view.update(cx, |this, cx| {
@@ -2103,7 +2100,7 @@ impl MainView {
             .child(band_bar)
             .child(editor)
             .children(output)
-            .child(fluent::caption("Drag a point to set frequency and gain. Scroll over the graph to set Q.", cx))
+            .child(fluent::caption("Scroll over the graph to change the selected band's Q.", cx))
             .into_any_element()
     }
 
@@ -2220,7 +2217,7 @@ impl MainView {
                 )
             })
             .child(div().w(px(24.)).text_xs().text_right().text_color(p.text2).child(if on { "On" } else { "Off" }))
-            .child(fluent::switch(("on", id as usize), on, if on { "Bypass" } else { "Enable" }, cx, {
+            .child(fluent::switch(("on", id as usize), on, "", cx, {
                 let view = cx.entity();
                 move |on, _, cx| {
                     view.update(cx, |this, cx| {
