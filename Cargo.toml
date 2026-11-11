@@ -12,7 +12,6 @@ engine = { path = "crates/engine" }
 wasapi = "0.27"
 windows = "0.62"
 rtrb = "0.4"
-rubato = "5"
 gpui = { package = "gpui-pre", version = "=0.3.12" }
 gpui-component = "0.9.1"
 tray-icon = "0.26"
