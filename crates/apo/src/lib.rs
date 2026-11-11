@@ -1,28 +1,36 @@
 //! WinFX audio processing object (APO): runs the effects inside the Windows
 //! audio engine (audiodg.exe), on the real capture device.
 //!
-//! Spike stage: pass-through plus a quiet 1 kHz tone, so a plain recording
-//! shows whether Windows loaded us. Non-real-time calls are logged to
+//! audiodg creates APOs through COM aggregation, which windows-rs's
+//! `#[implement]` can't do, so the APO object is laid out by hand in `com.rs`.
+//! This file holds the behaviour; `com.rs` holds the vtables.
+//!
+//! The effects chain comes from the WinFX app through shared memory (see
+//! `host.rs` and `engine::shared`); until one arrives, or while bypassed, audio
+//! passes through untouched. Non-real-time calls are logged to
 //! C:\ProgramData\WinFX-dev\apo-logs\apo.log.
 
 #![allow(non_snake_case)]
 
+mod com;
+mod host;
 mod log;
 
-use std::ffi::c_void;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering::Relaxed};
-use windows::Win32::Foundation::{CLASS_E_CLASSNOTAVAILABLE, CLASS_E_NOAGGREGATION, E_INVALIDARG, E_POINTER, S_FALSE};
+use engine::Chain;
+use engine::meters::{Meters, block_levels};
+use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER};
 use windows::Win32::Media::Audio::Apo::*;
-use windows::Win32::System::Com::{CoTaskMemAlloc, IClassFactory, IClassFactory_Impl};
-use windows_core::{BOOL, GUID, HRESULT, IUnknown, Interface, Ref, implement};
+use windows::Win32::System::Com::CoTaskMemAlloc;
+use windows_core::{GUID, Interface};
 
 pub const CLSID_SFX: GUID = GUID::from_u128(0x77069dd4_922e_4a92_8b31_ea606fedce4b);
 pub const CLSID_MFX: GUID = GUID::from_u128(0xb1392a38_ebf1_43a8_b2bb_0ec0e7e87d37);
 /// KSDATAFORMAT_SUBTYPE_IEEE_FLOAT
 const SUBTYPE_FLOAT: GUID = GUID::from_u128(0x00000003_0000_0010_8000_00aa00389b71);
 
-fn clsid_name(c: &GUID) -> &'static str {
+pub(crate) fn clsid_name(c: &GUID) -> &'static str {
     if *c == CLSID_SFX {
         "SFX"
     } else if *c == CLSID_MFX {
@@ -32,6 +40,8 @@ fn clsid_name(c: &GUID) -> &'static str {
     }
 }
 
+type Result<T> = windows_core::Result<T>;
+
 /// State touched by the real-time thread. LockForProcess/UnlockForProcess never
 /// run concurrently with APOProcess, so APOProcess's try_lock never contends.
 #[derive(Default)]
@@ -39,27 +49,31 @@ struct Rt {
     locked: bool,
     channels: usize,
     rate: f32,
-    phase: f32,
+    inst: Option<Arc<host::Inst>>,
+    chain: Option<Box<Chain>>,
+    /// Mono working buffer, sized at LockForProcess.
+    scratch: Vec<f32>,
+    /// Used when the shared block isn't mapped.
+    own_meters: Option<Box<Meters>>,
 }
 
-#[implement(IAudioProcessingObject, IAudioProcessingObjectRT, IAudioProcessingObjectConfiguration, IAudioSystemEffects, IAudioSystemEffects2)]
-struct Apo {
+/// Counters the real-time thread bumps; logged at UnlockForProcess.
+#[derive(Default)]
+struct Stats {
+    calls: AtomicU64,
+    frames: AtomicU64,
+    silent_calls: AtomicU64,
+    /// f32 bits of the largest input sample seen.
+    in_peak: AtomicU32,
+}
+
+pub(crate) struct Core {
     clsid: GUID,
     rt: Mutex<Rt>,
-    frames: AtomicU64,
-    calls: AtomicU64,
+    stats: Stats,
 }
 
-impl Apo {
-    fn new(clsid: GUID) -> Self {
-        Apo { clsid, rt: Mutex::new(Rt::default()), frames: AtomicU64::new(0), calls: AtomicU64::new(0) }
-    }
-    fn tag(&self) -> &'static str {
-        clsid_name(&self.clsid)
-    }
-}
-
-fn float_format(t: &IAudioMediaType) -> windows_core::Result<UNCOMPRESSEDAUDIOFORMAT> {
+fn float_format(t: &IAudioMediaType) -> Result<UNCOMPRESSEDAUDIOFORMAT> {
     let mut f = UNCOMPRESSEDAUDIOFORMAT::default();
     unsafe { t.GetUncompressedAudioFormat(&mut f)? };
     Ok(f)
@@ -76,31 +90,32 @@ fn describe(f: &UNCOMPRESSEDAUDIOFORMAT) -> String {
     )
 }
 
-fn check_format(tag: &str, which: &str, requested: Ref<IAudioMediaType>) -> windows_core::Result<IAudioMediaType> {
-    let Some(req) = requested.as_ref() else { return Err(E_POINTER.into()) };
-    let f = float_format(req)?;
-    let ok = f.guidFormatType == SUBTYPE_FLOAT && f.dwBytesPerSampleContainer == 4 && f.dwSamplesPerFrame > 0;
-    log::line(&format!("[{tag}] Is{which}FormatSupported {} -> {}", describe(&f), if ok { "yes" } else { "no" }));
-    if ok { Ok(req.clone()) } else { Err(APOERR_FORMAT_NOT_SUPPORTED.into()) }
+fn wide(dst: &mut [u16], s: &str) {
+    for (d, c) in dst.iter_mut().zip(s.encode_utf16().chain(std::iter::once(0))) {
+        *d = c;
+    }
 }
 
-impl IAudioProcessingObject_Impl for Apo_Impl {
-    fn Reset(&self) -> windows_core::Result<()> {
-        if let Ok(mut rt) = self.rt.lock() {
-            rt.phase = 0.0;
-        }
+impl Core {
+    pub(crate) fn new(clsid: GUID) -> Self {
+        Core { clsid, rt: Mutex::new(Rt::default()), stats: Stats::default() }
+    }
+
+    fn tag(&self) -> &'static str {
+        clsid_name(&self.clsid)
+    }
+
+    // ----- IAudioProcessingObject -----
+
+    pub(crate) fn reset(&self) -> Result<()> {
         Ok(())
     }
 
-    fn GetLatency(&self) -> windows_core::Result<i64> {
-        Ok(0)
-    }
-
-    fn GetRegistrationProperties(&self) -> windows_core::Result<*mut APO_REG_PROPERTIES> {
+    pub(crate) fn registration_properties(&self) -> Result<*mut APO_REG_PROPERTIES> {
         unsafe {
             let p = CoTaskMemAlloc(size_of::<APO_REG_PROPERTIES>()) as *mut APO_REG_PROPERTIES;
             if p.is_null() {
-                return Err(windows::Win32::Foundation::E_OUTOFMEMORY.into());
+                return Err(E_OUTOFMEMORY.into());
             }
             let mut r: APO_REG_PROPERTIES = std::mem::zeroed();
             r.clsid = self.clsid;
@@ -121,51 +136,38 @@ impl IAudioProcessingObject_Impl for Apo_Impl {
         }
     }
 
-    fn Initialize(&self, cbdatasize: u32, pbydata: *const u8) -> windows_core::Result<()> {
-        let mut msg = format!("[{}] Initialize {} bytes", self.tag(), cbdatasize);
-        if !pbydata.is_null() && cbdatasize as usize >= size_of::<APOInitSystemEffects2>() {
-            let init = unsafe { &*(pbydata as *const APOInitSystemEffects2) };
+    pub(crate) fn initialize(&self, size: u32, data: *const u8) -> Result<()> {
+        let mut msg = format!("[{}] Initialize {} bytes", self.tag(), size);
+        if !data.is_null() && size as usize >= size_of::<APOInitSystemEffects2>() {
+            let init = unsafe { &*(data as *const APOInitSystemEffects2) };
             msg += &format!(
                 " (SystemEffects2: mode {:?}, discovery-only {})",
                 init.AudioProcessingMode,
                 init.InitializeForDiscoveryOnly.as_bool()
             );
-        } else if cbdatasize as usize >= size_of::<APOInitSystemEffects>() {
+        } else if size as usize >= size_of::<APOInitSystemEffects>() {
             msg += " (SystemEffects)";
         }
         log::line(&msg);
         Ok(())
     }
 
-    fn IsInputFormatSupported(
-        &self,
-        _opposite: Ref<IAudioMediaType>,
-        requested: Ref<IAudioMediaType>,
-    ) -> windows_core::Result<IAudioMediaType> {
-        check_format(self.tag(), "Input", requested)
+    /// Accept any float32 PCM layout; the engine converts around us.
+    pub(crate) fn format_supported(&self, which: &str, requested: Option<&IAudioMediaType>) -> Result<IAudioMediaType> {
+        let Some(req) = requested else { return Err(E_POINTER.into()) };
+        let f = float_format(req)?;
+        let ok = f.guidFormatType == SUBTYPE_FLOAT && f.dwBytesPerSampleContainer == 4 && f.dwSamplesPerFrame > 0;
+        log::line(&format!("[{}] Is{which}FormatSupported {} -> {}", self.tag(), describe(&f), if ok { "yes" } else { "no" }));
+        if ok { Ok(req.clone()) } else { Err(APOERR_FORMAT_NOT_SUPPORTED.into()) }
     }
 
-    fn IsOutputFormatSupported(
-        &self,
-        _opposite: Ref<IAudioMediaType>,
-        requested: Ref<IAudioMediaType>,
-    ) -> windows_core::Result<IAudioMediaType> {
-        check_format(self.tag(), "Output", requested)
+    pub(crate) fn input_channel_count(&self) -> u32 {
+        self.rt.lock().map(|r| r.channels as u32).unwrap_or(0)
     }
 
-    fn GetInputChannelCount(&self) -> windows_core::Result<u32> {
-        Ok(self.rt.lock().map(|r| r.channels as u32).unwrap_or(0))
-    }
-}
+    // ----- IAudioProcessingObjectConfiguration -----
 
-impl IAudioProcessingObjectConfiguration_Impl for Apo_Impl {
-    fn LockForProcess(
-        &self,
-        nin: u32,
-        ppin: *const *const APO_CONNECTION_DESCRIPTOR,
-        nout: u32,
-        _ppout: *const *const APO_CONNECTION_DESCRIPTOR,
-    ) -> windows_core::Result<()> {
+    pub(crate) fn lock_for_process(&self, nin: u32, ppin: *const *const APO_CONNECTION_DESCRIPTOR, nout: u32) -> Result<()> {
         if nin != 1 || nout != 1 || ppin.is_null() {
             return Err(E_INVALIDARG.into());
         }
@@ -177,151 +179,159 @@ impl IAudioProcessingObjectConfiguration_Impl for Apo_Impl {
         rt.locked = true;
         rt.channels = f.dwSamplesPerFrame as usize;
         rt.rate = f.fFramesPerSecond;
-        rt.phase = 0.0;
-        self.frames.store(0, Relaxed);
-        self.calls.store(0, Relaxed);
+        rt.scratch = vec![0.0; (desc.u32MaxFrameCount as usize).max(4096)];
+        rt.own_meters = Some(Box::default());
+        rt.chain = None;
+        let inst = host::Inst::new(rt.rate);
+        host::register(inst.clone());
+        rt.inst = Some(inst);
+        for c in [&self.stats.calls, &self.stats.frames, &self.stats.silent_calls] {
+            c.store(0, Relaxed);
+        }
+        self.stats.in_peak.store(0, Relaxed);
         Ok(())
     }
 
-    fn UnlockForProcess(&self) -> windows_core::Result<()> {
+    pub(crate) fn unlock_for_process(&self) -> Result<()> {
         if let Ok(mut rt) = self.rt.lock() {
             rt.locked = false;
+            rt.chain = None;
+            if let Some(i) = rt.inst.take() {
+                i.live.store(false, std::sync::atomic::Ordering::Release);
+                i.drain();
+            }
         }
+        let s = &self.stats;
+        let peak = f32::from_bits(s.in_peak.load(Relaxed));
         log::line(&format!(
-            "[{}] UnlockForProcess after {} calls, {} frames",
+            "[{}] UnlockForProcess: {} calls, {} frames, {} flagged silent, input peak {:.1} dBFS",
             self.tag(),
-            self.calls.load(Relaxed),
-            self.frames.load(Relaxed)
+            s.calls.load(Relaxed),
+            s.frames.load(Relaxed),
+            s.silent_calls.load(Relaxed),
+            20.0 * peak.max(1e-9).log10()
         ));
         Ok(())
     }
-}
 
-impl IAudioProcessingObjectRT_Impl for Apo_Impl {
-    fn APOProcess(
-        &self,
-        nin: u32,
-        ppin: *const *const APO_CONNECTION_PROPERTY,
-        nout: u32,
-        ppout: *mut *mut APO_CONNECTION_PROPERTY,
-    ) {
-        if nin < 1 || nout < 1 || ppin.is_null() || ppout.is_null() {
-            return;
-        }
-        let (inp, out) = unsafe { (&**ppin, &mut **ppout) };
+    // ----- IAudioProcessingObjectRT -----
+
+    pub(crate) fn process(&self, inp: &APO_CONNECTION_PROPERTY, out: &mut APO_CONNECTION_PROPERTY) {
         let n = inp.u32ValidFrameCount as usize;
-        let Ok(mut rt) = self.rt.try_lock() else { return };
-        if !rt.locked || rt.channels == 0 {
-            return;
-        }
-        let ch = rt.channels;
         let src = inp.pBuffer as *const f32;
         let dst = out.pBuffer as *mut f32;
         let silent = inp.u32BufferFlags == BUFFER_SILENT;
-        let step = std::f32::consts::TAU * 1000.0 / rt.rate.max(1.0);
-        let mut phase = rt.phase;
-        for i in 0..n {
-            let tone = phase.sin() * 0.0316; // -30 dBFS
-            phase += step;
-            if phase > std::f32::consts::TAU {
-                phase -= std::f32::consts::TAU;
+        out.u32ValidFrameCount = n as u32;
+        out.u32BufferFlags = BUFFER_VALID;
+
+        let Ok(mut guard) = self.rt.try_lock() else { return };
+        let rt = &mut *guard;
+        let ch = rt.channels;
+        if !rt.locked || ch == 0 {
+            return;
+        }
+        // Too big for the scratch buffer (never expected): pass through.
+        if n > rt.scratch.len() {
+            if !silent && src != dst as *const f32 {
+                unsafe { std::ptr::copy_nonoverlapping(src, dst, n * ch) };
             }
-            for c in 0..ch {
-                let k = i * ch + c;
-                unsafe {
-                    let x = if silent { 0.0 } else { *src.add(k) };
-                    *dst.add(k) = x + tone;
+            return;
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        #[allow(deprecated)]
+        let csr = unsafe {
+            use std::arch::x86_64::{_mm_getcsr, _mm_setcsr};
+            let c = _mm_getcsr();
+            _mm_setcsr(c | 0x8040); // flush denormals to zero
+            c
+        };
+
+        // Pick up a newly built chain (only once the watcher has emptied `trash`).
+        if let Some(inst) = &rt.inst {
+            use std::sync::atomic::Ordering::{AcqRel, Acquire, Release};
+            if inst.trash.load(Acquire).is_null() {
+                let p = inst.pending.swap(std::ptr::null_mut(), AcqRel);
+                if !p.is_null() {
+                    let mut new = unsafe { Box::from_raw(p) };
+                    if let Some(mut old) = rt.chain.take() {
+                        new.adopt_state(&mut old);
+                        inst.trash.store(Box::into_raw(old), Release);
+                    }
+                    rt.chain = Some(new);
                 }
             }
         }
-        rt.phase = phase;
-        out.u32ValidFrameCount = n as u32;
-        out.u32BufferFlags = BUFFER_VALID;
-        self.calls.fetch_add(1, Relaxed);
-        self.frames.fetch_add(n as u64, Relaxed);
-    }
 
-    fn CalcInputFrames(&self, n: u32) -> u32 {
-        n
-    }
+        let sh = host::shared().filter(|s| s.valid());
+        let bypass = sh.is_some_and(|s| s.bypass.load(Relaxed) != 0);
+        let Rt { scratch, chain, own_meters, rate, .. } = rt;
+        let meters: &Meters = match (sh, own_meters.as_deref()) {
+            (Some(s), _) => &s.meters,
+            (None, Some(m)) => m,
+            (None, None) => return,
+        };
 
-    fn CalcOutputFrames(&self, n: u32) -> u32 {
-        n
-    }
-}
-
-impl IAudioSystemEffects_Impl for Apo_Impl {}
-
-impl IAudioSystemEffects2_Impl for Apo_Impl {
-    fn GetEffectsList(
-        &self,
-        ppeffectsids: *mut *mut GUID,
-        pceffects: *mut u32,
-        _event: windows::Win32::Foundation::HANDLE,
-    ) -> windows_core::Result<()> {
-        if ppeffectsids.is_null() || pceffects.is_null() {
-            return Err(E_POINTER.into());
+        // Mono mix of the input.
+        let buf = &mut scratch[..n];
+        if silent {
+            buf.fill(0.0);
+        } else {
+            let k = 1.0 / ch as f32;
+            for (i, m) in buf.iter_mut().enumerate() {
+                let mut acc = 0.0;
+                for c in 0..ch {
+                    acc += unsafe { *src.add(i * ch + c) };
+                }
+                *m = acc * k;
+            }
         }
+        let (ip, ir) = block_levels(buf);
+        meters.in_peak.raise(ip);
+        meters.in_rms.raise(ir);
+        if ip > f32::from_bits(self.stats.in_peak.load(Relaxed)) {
+            self.stats.in_peak.store(ip.to_bits(), Relaxed);
+        }
+
+        match (chain.as_deref_mut(), bypass) {
+            (Some(chain), false) => {
+                chain.process(buf, meters);
+                for (i, &v) in buf.iter().enumerate() {
+                    for c in 0..ch {
+                        unsafe { *dst.add(i * ch + c) = v };
+                    }
+                }
+            }
+            _ => {
+                // Untouched pass-through.
+                if silent {
+                    unsafe { std::ptr::write_bytes(dst, 0, n * ch) };
+                } else if src != dst as *const f32 {
+                    unsafe { std::ptr::copy_nonoverlapping(src, dst, n * ch) };
+                }
+            }
+        }
+        let out_view = unsafe { std::slice::from_raw_parts(dst as *const f32, n * ch) };
+        let (op, or) = block_levels(out_view);
+        meters.out_peak.raise(op);
+        meters.out_rms.raise(or);
+
+        let s = &self.stats;
+        s.calls.fetch_add(1, Relaxed);
+        s.frames.fetch_add(n as u64, Relaxed);
+        if silent {
+            s.silent_calls.fetch_add(1, Relaxed);
+        }
+        if let Some(sh) = sh {
+            sh.frames.fetch_add(n as u64, Relaxed);
+            sh.rate.store(*rate as u32, Relaxed);
+            sh.channels.store(ch as u32, Relaxed);
+        }
+
+        #[cfg(target_arch = "x86_64")]
+        #[allow(deprecated)]
         unsafe {
-            *ppeffectsids = std::ptr::null_mut();
-            *pceffects = 0;
-        }
-        Ok(())
+            std::arch::x86_64::_mm_setcsr(csr)
+        };
     }
-}
-
-fn wide(dst: &mut [u16], s: &str) {
-    for (d, c) in dst.iter_mut().zip(s.encode_utf16().chain(std::iter::once(0))) {
-        *d = c;
-    }
-}
-
-// ---------- COM plumbing ----------
-
-#[implement(IClassFactory)]
-struct Factory {
-    clsid: GUID,
-}
-
-impl IClassFactory_Impl for Factory_Impl {
-    fn CreateInstance(&self, outer: Ref<IUnknown>, riid: *const GUID, ppv: *mut *mut c_void) -> windows_core::Result<()> {
-        if ppv.is_null() || riid.is_null() {
-            return Err(E_POINTER.into());
-        }
-        unsafe { *ppv = std::ptr::null_mut() };
-        let iid = unsafe { *riid };
-        if outer.is_some() {
-            log::line(&format!("[{}] CreateInstance with an outer IUnknown (aggregation) for {iid:?}: refused", clsid_name(&self.clsid)));
-            return Err(CLASS_E_NOAGGREGATION.into());
-        }
-        let obj: IUnknown = Apo::new(self.clsid).into();
-        let hr = unsafe { obj.query(&iid, ppv) };
-        log::line(&format!("[{}] CreateInstance {iid:?} -> {hr:?}", clsid_name(&self.clsid)));
-        hr.ok()
-    }
-
-    fn LockServer(&self, _lock: BOOL) -> windows_core::Result<()> {
-        Ok(())
-    }
-}
-
-#[unsafe(no_mangle)]
-extern "system" fn DllGetClassObject(rclsid: *const GUID, riid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
-    if rclsid.is_null() || riid.is_null() || ppv.is_null() {
-        return E_POINTER;
-    }
-    unsafe { *ppv = std::ptr::null_mut() };
-    let clsid = unsafe { *rclsid };
-    if clsid != CLSID_SFX && clsid != CLSID_MFX {
-        return CLASS_E_CLASSNOTAVAILABLE;
-    }
-    log::line(&format!("DllGetClassObject {}", clsid_name(&clsid)));
-    let f: IClassFactory = Factory { clsid }.into();
-    unsafe { f.query(&*riid, ppv) }
-}
-
-/// Never unload: simpler, and audiodg keeps us for the stream's lifetime anyway.
-#[unsafe(no_mangle)]
-extern "system" fn DllCanUnloadNow() -> HRESULT {
-    S_FALSE
 }

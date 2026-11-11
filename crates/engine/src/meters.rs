@@ -9,6 +9,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
 pub const MAX_SLOTS: usize = 32;
 
 #[derive(Default)]
+#[repr(transparent)]
 pub struct AtomicF32(AtomicU32);
 
 impl AtomicF32 {
@@ -28,7 +29,9 @@ impl AtomicF32 {
     }
 }
 
+/// `repr(C)`: also lives in the app/APO shared memory block.
 #[derive(Default)]
+#[repr(C)]
 pub struct Meters {
     /// Linear peak / RMS of the raw input (before the chain).
     pub in_peak: AtomicF32,

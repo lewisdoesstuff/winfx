@@ -12,6 +12,7 @@ mod engine;
 pub mod import;
 pub mod meters;
 pub mod resample;
+pub mod shared;
 pub mod tap;
 pub mod wav;
 mod stream;
