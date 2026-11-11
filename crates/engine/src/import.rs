@@ -482,6 +482,27 @@ fn ee_equalizer(p: &Value, report: &mut ImportReport) -> EqParams {
 }
 
 fn ee_filter(p: &Value, b: &mut Builder, bypass: bool) {
+    // EasyEffects 6 and older: "mode": "12dB/oct Highpass", "resonance" in dB.
+    if p.get("type").is_none() {
+        let mode = text(p, "mode");
+        let lower = mode.to_ascii_lowercase();
+        let kind = if lower.contains("highpass") {
+            FilterKind::HighPass
+        } else if lower.contains("lowpass") {
+            FilterKind::LowPass
+        } else {
+            b.report.skipped.push(format!("Filter of type \"{mode}\""));
+            return;
+        };
+        let db_per_oct: f32 = lower.split("db").next().and_then(|n| n.trim().parse().ok()).unwrap_or(12.0);
+        let stages = ((db_per_oct / 12.0).round() as u8).clamp(1, MAX_SLOPE);
+        // −3 dB resonance is a Butterworth (Q 0.707); every dB above raises Q accordingly.
+        let q = (std::f32::consts::FRAC_1_SQRT_2 * crate::dsp::db_to_lin(num(p, "resonance", -3.0) + 3.0)).clamp(0.3, 10.0);
+        let freq = num(p, "frequency", 80.0).clamp(10.0, 24_000.0);
+        b.push(EffectConfig::Filter(FilterParams { kind, freq_hz: freq, q, slope: stages }), bypass);
+        b.report.mapped.push(format!("Filter ({mode})"));
+        return;
+    }
     let label = text(p, "type");
     let Some((kind, _, exact)) = lsp_kind(label) else {
         b.report.skipped.push(format!("Filter of type \"{label}\""));

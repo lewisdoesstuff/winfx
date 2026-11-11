@@ -4,6 +4,7 @@
 //! and reads [`Meters`] (atomics) and [`Status`] (mutex, control-rate only).
 //! Nothing on the audio threads locks or allocates in steady state.
 
+pub mod analysis;
 pub mod chain;
 pub mod devices;
 pub mod dsp;
@@ -12,6 +13,7 @@ pub mod import;
 pub mod meters;
 pub mod resample;
 pub mod tap;
+pub mod wav;
 mod stream;
 
 pub use chain::{Chain, ChainConfig, EffectConfig, EffectSlot};

@@ -102,6 +102,27 @@ impl Tap {
         self.original.load(Relaxed)
     }
 
+    /// Copy of the recording (control side).
+    pub fn export_recording(&self) -> Vec<f32> {
+        let n = self.rec_len.load(Relaxed);
+        self.rec[..n].iter().map(|a| f32::from_bits(a.load(Relaxed))).collect()
+    }
+
+    /// Replace the recording with `samples` (e.g. a saved take). Stops any
+    /// recording/audition first; returns the seconds loaded.
+    pub fn load_recording(&self, samples: &[f32]) -> f32 {
+        self.recording.store(false, Relaxed);
+        self.auditioning.store(false, Relaxed);
+        self.rec_len.store(0, Relaxed);
+        let n = samples.len().min(self.rec.len());
+        for (a, s) in self.rec.iter().zip(&samples[..n]) {
+            a.store(s.to_bits(), Relaxed);
+        }
+        self.play_pos.store(0, Relaxed);
+        self.rec_len.store(n, Relaxed);
+        self.recorded_seconds()
+    }
+
     /// The most recent `out.len()` output samples, oldest first.
     pub fn read_scope(&self, out: &mut [f32]) {
         let n = out.len().min(SCOPE_LEN);

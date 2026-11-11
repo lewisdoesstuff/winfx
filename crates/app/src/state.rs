@@ -52,6 +52,16 @@ fn config_path() -> PathBuf {
     data_dir().join("config.json")
 }
 
+pub fn recordings_dir() -> PathBuf {
+    data_dir().join("recordings")
+}
+
+/// "2026-11-11 19-42-05" in local time.
+pub fn local_timestamp() -> String {
+    let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
+    format!("{:04}-{:02}-{:02} {:02}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
+}
+
 fn presets_dir() -> PathBuf {
     data_dir().join("presets")
 }

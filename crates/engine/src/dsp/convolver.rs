@@ -60,38 +60,10 @@ pub fn kernel(path: &str, sr: f32) -> Result<Arc<Kernel>, String> {
 }
 
 fn load(path: &str, sr: f32) -> Result<Kernel, String> {
-    let mut reader = hound::WavReader::open(path).map_err(|e| format!("couldn't open the IR: {e}"))?;
-    let spec = reader.spec();
-    let ch = spec.channels.max(1) as usize;
-    let raw: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>(),
-        hound::SampleFormat::Int => {
-            let scale = 1.0 / (1u64 << (spec.bits_per_sample - 1)) as f32;
-            reader.samples::<i32>().map(|s| s.map(|v| v as f32 * scale)).collect::<Result<_, _>>()
-        }
-    }
-    .map_err(|e| format!("couldn't read the IR: {e}"))?;
-    // Mono: average the channels.
-    let mono: Vec<f32> = raw.chunks(ch).map(|f| f.iter().sum::<f32>() / ch as f32).collect();
-    if mono.is_empty() {
-        return Err("the IR file is empty".into());
-    }
-    // Resample to the engine rate (cubic interpolation is plenty for an IR).
-    let ratio = spec.sample_rate as f64 / sr as f64;
-    let out_len = ((mono.len() as f64 / ratio) as usize).min((MAX_IR_SECONDS * sr) as usize).max(1);
-    let at = |i: isize| mono[i.clamp(0, mono.len() as isize - 1) as usize];
-    let mut ir: Vec<f32> = (0..out_len)
-        .map(|n| {
-            let pos = n as f64 * ratio;
-            let i = pos.floor() as isize;
-            let t = (pos - i as f64) as f32;
-            let (a, b, c, d) = (at(i - 1), at(i), at(i + 1), at(i + 2));
-            let c1 = 0.5 * (c - a);
-            let c2 = a - 2.5 * b + 2.0 * c - 0.5 * d;
-            let c3 = 0.5 * (d - a) + 1.5 * (b - c);
-            ((c3 * t + c2) * t + c1) * t + b
-        })
-        .collect();
+    let (mut ir, info) = crate::wav::read_mono(std::path::Path::new(path), sr, MAX_IR_SECONDS)
+        .map_err(|e| format!("the IR: {e}"))?;
+    let out_len = ir.len();
+    let spec = hound::WavSpec { channels: info.channels, sample_rate: info.source_rate, bits_per_sample: 0, sample_format: hound::SampleFormat::Float };
     // Unity power gain, so swapping IRs doesn't jump the level.
     let energy: f32 = ir.iter().map(|v| v * v).sum::<f32>().sqrt();
     if energy < 1e-9 {

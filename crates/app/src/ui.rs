@@ -804,6 +804,46 @@ impl MainView {
         cx.notify();
     }
 
+    fn save_recording(&mut self, cx: &mut Context<Self>) {
+        let samples = self.state.read(cx).engine.tap().export_recording();
+        let dir = crate::state::recordings_dir();
+        let path = dir.join(format!("recording {}.wav", crate::state::local_timestamp()));
+        let result = std::fs::create_dir_all(&dir)
+            .map_err(|e| e.to_string())
+            .and_then(|_| engine::wav::write_mono(&path, &samples, engine::SAMPLE_RATE));
+        self.import_notice = Some(match result {
+            Ok(()) => (Severity::Success, "Recording saved.".into(), path.display().to_string()),
+            Err(e) => (Severity::Error, "Couldn’t save the recording.".into(), e),
+        });
+        cx.notify();
+    }
+
+    fn load_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Load into Audition".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            let Ok(Ok(Some(paths))) = rx.await else { return };
+            let Some(path) = paths.into_iter().next() else { return };
+            let _ = this.update(cx, |this, cx| {
+                this.set_audition(false, cx);
+                let max = engine::tap::REC_SECONDS as f32;
+                this.import_notice = Some(match engine::wav::read_mono(&path, engine::SAMPLE_RATE as f32, max) {
+                    Ok((samples, _)) => {
+                        let secs = this.state.read(cx).engine.tap().load_recording(&samples);
+                        (Severity::Success, format!("Loaded {secs:.1} s into Audition."), "Press Play to hear it through the chain.".into())
+                    }
+                    Err(e) => (Severity::Error, "Couldn’t load that file.".into(), e),
+                });
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     // ---------- gate calibration ----------
 
     fn start_calibration(&mut self, slot: u32, cx: &mut Context<Self>) {
@@ -1015,6 +1055,21 @@ impl MainView {
                     .child(fluent::glyph(if recording { g::STOP } else { g::RECORD }, 12.))
                     .child(if recording { "Stop" } else if has { "Re-record" } else { "Record" })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_record(cx))),
+            )
+            .when(has && !recording, |d| {
+                d.child(
+                    fluent::subtle_button("rec-save", cx)
+                        .child(fluent::glyph(g::SAVE, 12.))
+                        .child("Save")
+                        .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Save the raw recording as a WAV file").build(w, cx))
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_recording(cx))),
+                )
+            })
+            .child(
+                fluent::subtle_button("rec-load", cx)
+                    .child("Load…")
+                    .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Audition a WAV file instead of a recording").build(w, cx))
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.load_recording(window, cx))),
             )
             .child(
                 fluent::button("play", cx)
