@@ -17,6 +17,25 @@ pub struct FilterParams {
     pub kind: FilterKind,
     pub freq_hz: f32,
     pub q: f32,
+    /// Number of cascaded biquads: 1 = 12 dB/oct, 2 = 24 dB/oct, …
+    #[serde(default = "one")]
+    pub slope: u8,
+}
+
+impl FilterParams {
+    pub fn stages(&self) -> usize {
+        self.slope.clamp(1, MAX_SLOPE) as usize
+    }
+    pub fn coeffs(&self, sr: f32) -> Coeffs {
+        Coeffs::design(self.kind, self.freq_hz, self.q, 0.0, sr)
+    }
+}
+
+/// Steepest slope offered (8 × 12 dB/oct).
+pub const MAX_SLOPE: u8 = 8;
+
+fn one() -> u8 {
+    1
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -28,6 +47,9 @@ pub struct EqBand {
     #[serde(default)]
     pub gain_db: f32,
     pub q: f32,
+    /// Cascaded stages; for gain types each stage gets gain / stages.
+    #[serde(default = "one")]
+    pub slope: u8,
 }
 
 fn yes() -> bool {
@@ -37,15 +59,35 @@ fn yes() -> bool {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EqParams {
     pub bands: Vec<EqBand>,
+    /// Overall gain after the bands (e.g. an imported "Preamp").
+    #[serde(default)]
+    pub gain_db: f32,
+}
+
+impl EqParams {
+    pub fn total_stages(&self) -> usize {
+        self.bands.iter().map(EqBand::stages).sum()
+    }
 }
 
 impl EqBand {
+    pub fn stages(&self) -> usize {
+        self.slope.clamp(1, MAX_SLOPE) as usize
+    }
+
+    /// Coefficients of ONE stage; the band is `stages()` of these in series.
     pub fn coeffs(&self, sr: f32) -> Coeffs {
         if self.enabled {
-            Coeffs::design(self.kind, self.freq_hz, self.q, self.gain_db, sr)
+            let g = if self.kind.has_gain() { self.gain_db / self.stages() as f32 } else { 0.0 };
+            Coeffs::design(self.kind, self.freq_hz, self.q, g, sr)
         } else {
             Coeffs::IDENTITY
         }
+    }
+
+    /// The band's full magnitude response in dB.
+    pub fn response_db(&self, freq: f32, sr: f32) -> f32 {
+        self.coeffs(sr).magnitude_db(freq, sr) * self.stages() as f32
     }
 }
 
@@ -75,11 +117,9 @@ impl EffectConfig {
     /// Magnitude response in dB at `freq` for filter-type effects (for the EQ curve).
     pub fn response_db(&self, freq: f32, sr: f32) -> Option<f32> {
         match self {
-            EffectConfig::Filter(p) => {
-                Some(Coeffs::design(p.kind, p.freq_hz, p.q, 0.0, sr).magnitude_db(freq, sr))
-            }
+            EffectConfig::Filter(p) => Some(p.coeffs(sr).magnitude_db(freq, sr) * p.stages() as f32),
             EffectConfig::Eq(p) => {
-                Some(p.bands.iter().map(|b| b.coeffs(sr).magnitude_db(freq, sr)).sum())
+                Some(p.gain_db + p.bands.iter().map(|b| b.response_db(freq, sr)).sum::<f32>())
             }
             EffectConfig::Gain(p) => Some(p.gain_db),
             _ => None,
@@ -106,9 +146,9 @@ impl ChainConfig {
     /// The SM57 → "SM7B-ish" voice chain from the handoff.
     pub fn sm57_voice() -> Self {
         use FilterKind::*;
-        let band = |kind, freq_hz, gain_db, q| EqBand { enabled: true, kind, freq_hz, gain_db, q };
+        let band = |kind, freq_hz, gain_db, q| EqBand { enabled: true, kind, freq_hz, gain_db, q, slope: 1 };
         let slots = vec![
-            EffectConfig::Filter(FilterParams { kind: HighPass, freq_hz: 80.0, q: 0.707 }),
+            EffectConfig::Filter(FilterParams { kind: HighPass, freq_hz: 80.0, q: 0.707, slope: 1 }),
             EffectConfig::Eq(EqParams {
                 bands: vec![
                     band(LowShelf, 160.0, 3.0, 0.707),
@@ -117,6 +157,7 @@ impl ChainConfig {
                     band(Peak, 5800.0, -4.0, 1.5),
                     band(HighShelf, 9000.0, -2.0, 0.707),
                 ],
+                gain_db: 0.0,
             }),
             EffectConfig::Gate(GateParams::default()),
             EffectConfig::Compressor(CompressorParams::default()),
@@ -144,8 +185,9 @@ impl Default for ChainConfig {
 }
 
 enum Proc {
-    Filter(Biquad),
-    Eq(Vec<Biquad>),
+    Filter(Vec<Biquad>),
+    /// All bands' stages flattened in order, plus the output gain.
+    Eq(Vec<Biquad>, Gain),
     Gate(Gate),
     Compressor(Compressor),
     Gain(Gain),
@@ -155,12 +197,14 @@ enum Proc {
 impl Proc {
     fn build(cfg: &EffectConfig, sr: f32) -> Proc {
         match cfg {
-            EffectConfig::Filter(p) => {
-                Proc::Filter(Biquad::new(Coeffs::design(p.kind, p.freq_hz, p.q, 0.0, sr)))
-            }
-            EffectConfig::Eq(p) => {
-                Proc::Eq(p.bands.iter().map(|b| Biquad::new(b.coeffs(sr))).collect())
-            }
+            EffectConfig::Filter(p) => Proc::Filter(vec![Biquad::new(p.coeffs(sr)); p.stages()]),
+            EffectConfig::Eq(p) => Proc::Eq(
+                p.bands
+                    .iter()
+                    .flat_map(|b| std::iter::repeat_n(Biquad::new(b.coeffs(sr)), b.stages()))
+                    .collect(),
+                Gain::new(&GainParams { gain_db: p.gain_db }, sr),
+            ),
             EffectConfig::Gate(p) => Proc::Gate(Gate::new(p, sr)),
             EffectConfig::Compressor(p) => Proc::Compressor(Compressor::new(p, sr)),
             EffectConfig::Gain(p) => Proc::Gain(Gain::new(p, sr)),
@@ -171,11 +215,11 @@ impl Proc {
     /// Can this processor take `cfg` in place, without reallocating?
     fn compatible(&self, cfg: &EffectConfig, sr: f32) -> bool {
         match (self, cfg) {
-            (Proc::Filter(_), EffectConfig::Filter(_))
-            | (Proc::Gate(_), EffectConfig::Gate(_))
+            (Proc::Filter(f), EffectConfig::Filter(p)) => f.len() == p.stages(),
+            (Proc::Gate(_), EffectConfig::Gate(_))
             | (Proc::Compressor(_), EffectConfig::Compressor(_))
             | (Proc::Gain(_), EffectConfig::Gain(_)) => true,
-            (Proc::Eq(f), EffectConfig::Eq(p)) => f.len() == p.bands.len(),
+            (Proc::Eq(f, _), EffectConfig::Eq(p)) => f.len() == p.total_stages(),
             (Proc::Limiter(l), EffectConfig::Limiter(p)) => l.compatible(p, sr),
             _ => false,
         }
@@ -183,13 +227,19 @@ impl Proc {
 
     fn set_params(&mut self, cfg: &EffectConfig, sr: f32) {
         match (self, cfg) {
-            (Proc::Filter(f), EffectConfig::Filter(p)) => {
-                f.set_coeffs(Coeffs::design(p.kind, p.freq_hz, p.q, 0.0, sr))
+            (Proc::Filter(fs), EffectConfig::Filter(p)) => {
+                let c = p.coeffs(sr);
+                fs.iter_mut().for_each(|f| f.set_coeffs(c));
             }
-            (Proc::Eq(fs), EffectConfig::Eq(p)) => {
-                for (f, b) in fs.iter_mut().zip(&p.bands) {
-                    f.set_coeffs(b.coeffs(sr));
+            (Proc::Eq(fs, gain), EffectConfig::Eq(p)) => {
+                let mut it = fs.iter_mut();
+                for b in &p.bands {
+                    let c = b.coeffs(sr);
+                    for f in it.by_ref().take(b.stages()) {
+                        f.set_coeffs(c);
+                    }
                 }
+                gain.set_params(&GainParams { gain_db: p.gain_db }, sr);
             }
             (Proc::Gate(g), EffectConfig::Gate(p)) => g.set_params(p, sr),
             (Proc::Compressor(c), EffectConfig::Compressor(p)) => c.set_params(p, sr),
@@ -202,8 +252,8 @@ impl Proc {
     #[inline]
     fn process(&mut self, x: f32) -> f32 {
         match self {
-            Proc::Filter(f) => f.process(x),
-            Proc::Eq(fs) => fs.iter_mut().fold(x, |x, f| f.process(x)),
+            Proc::Filter(fs) => fs.iter_mut().fold(x, |x, f| f.process(x)),
+            Proc::Eq(fs, gain) => gain.process(fs.iter_mut().fold(x, |x, f| f.process(x))),
             Proc::Gate(g) => g.process(x),
             Proc::Compressor(c) => c.process(x),
             Proc::Gain(g) => g.process(x),

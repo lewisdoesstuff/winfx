@@ -11,7 +11,8 @@ use engine::{ChainConfig, DeviceSel, RunState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
     anchored, canvas, deferred, div, fill, point, px, relative, size, svg, Anchor, AnyElement, App,
-    AppContext as _, Bounds, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
+    AppContext as _, Bounds, ClickEvent, Context, Entity, ExternalPaths, InteractiveElement as _, IntoElement,
+    PathPromptOptions,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
     Pixels, Render, ScrollEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
     Subscription, Task, Window, WindowControlArea,
@@ -46,6 +47,8 @@ pub struct MainView {
     autostart: bool,
     add_open: bool,
     save_as_open: bool,
+    /// Result of the last import: (severity, title, details).
+    import_notice: Option<(Severity, String, String)>,
     popover_closed_at: Instant,
     device_snapshot: (Vec<String>, Vec<String>),
     last_device_poll: Instant,
@@ -71,7 +74,11 @@ struct EqUi {
     band: usize,
     drag: Option<usize>,
     bounds: Rc<Cell<Bounds<Pixels>>>,
+    /// Selected band's Frequency / Gain / Q / Slope sliders.
     ctls: Vec<ParamCtl>,
+    gain_ctl: Option<ParamCtl>,
+    type_sel: Option<Entity<NameSelect>>,
+    _type_sub: Option<Subscription>,
 }
 
 /// Display-side meter state (dB), with peak hold/decay.
@@ -234,12 +241,22 @@ impl MainView {
             monitor_vol,
             preset_name,
             cards: vec![],
-            eq: EqUi { slot: None, band: 0, drag: None, bounds: Rc::new(Cell::new(Bounds::default())), ctls: vec![] },
+            eq: EqUi {
+                slot: None,
+                band: 0,
+                drag: None,
+                bounds: Rc::new(Cell::new(Bounds::default())),
+                ctls: vec![],
+                gain_ctl: None,
+                type_sel: None,
+                _type_sub: None,
+            },
             levels: Levels::default(),
             status: engine::Status::default(),
             autostart: system::autostart_enabled(),
             add_open: false,
             save_as_open: false,
+            import_notice: None,
             popover_closed_at: Instant::now(),
             device_snapshot,
             last_device_poll: Instant::now(),
@@ -247,6 +264,10 @@ impl MainView {
             _subs: subs,
         };
         view.rebuild_cards(window, cx);
+        // A preset file passed on the command line ("Open with WinFX").
+        if let Some(path) = view.state.update(cx, |s, _| s.pending_import.take()) {
+            view.import_path(&path, window, cx);
+        }
         view
     }
 
@@ -325,30 +346,146 @@ impl MainView {
         let EffectConfig::Eq(eq) = &slot.effect else { return };
         let band = band.min(eq.bands.len().saturating_sub(1));
         self.eq.band = band;
-        self.eq.ctls = params::specs(&slot.effect)
-            .into_iter()
-            .filter(|s| matches!(s.key, ParamKey::BandFreq(i) | ParamKey::BandGain(i) | ParamKey::BandQ(i) if i == band))
+        let specs = params::specs(&slot.effect);
+        self.eq.ctls = specs
+            .iter()
+            .filter(|s| {
+                matches!(s.key, ParamKey::BandFreq(i) | ParamKey::BandGain(i) | ParamKey::BandQ(i) | ParamKey::BandSlope(i) if i == band)
+            })
+            .cloned()
             .map(|mut spec| {
                 spec.label = match spec.key {
                     ParamKey::BandFreq(_) => "Frequency".into(),
                     ParamKey::BandGain(_) => "Gain".into(),
+                    ParamKey::BandSlope(_) => "Slope".into(),
                     _ => "Q".into(),
                 };
                 self.param_ctl(&slot, spec, window, cx)
             })
             .collect();
+        self.eq.gain_ctl = specs
+            .into_iter()
+            .find(|s| s.key == ParamKey::EqGain)
+            .map(|spec| self.param_ctl(&slot, spec, window, cx));
+
+        // Band type menu.
+        let kinds: Vec<SharedString> = params::BAND_KINDS.iter().map(|(_, n)| SharedString::from(*n)).collect();
+        let current = eq.bands.get(band).map(|b| b.kind);
+        let row = params::BAND_KINDS.iter().position(|(k, _)| Some(*k) == current).map(IndexPath::new);
+        let sel = cx.new(|cx| SelectState::new(kinds, row, window, cx));
+        let id = slot.id;
+        let sub = cx.subscribe_in(&sel, window, move |this, _, ev: &SelectEvent<Vec<SharedString>>, window, cx| {
+            let SelectEvent::Confirm(Some(name)) = ev else { return };
+            let Some((kind, _)) = params::BAND_KINDS.iter().find(|(_, n)| *n == name.as_ref()) else { return };
+            let band = this.eq.band;
+            this.edit_chain(cx, |c| {
+                if let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = c.slots.iter_mut().find(|s| s.id == id) {
+                    if let Some(b) = eq.bands.get_mut(band) {
+                        b.kind = *kind;
+                    }
+                }
+            });
+            // The gain slider appears/disappears with the type.
+            this.select_band(band, window, cx);
+        });
+        self.eq.type_sel = Some(sel);
+        self.eq._type_sub = Some(sub);
         cx.notify();
     }
 
-    fn eq_handles(&self, cx: &App) -> Vec<(f32, f32)> {
+    fn eq_handles(&self, cx: &App) -> Vec<(f32, f32, bool)> {
         let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = self.eq_slot(cx) else { return vec![] };
         eq.bands
             .iter()
-            .map(|b| {
-                let g = if matches!(b.kind, engine::dsp::FilterKind::HighPass | engine::dsp::FilterKind::LowPass) { 0.0 } else { b.gain_db };
-                (b.freq_hz, g)
-            })
+            .map(|b| (b.freq_hz, if b.kind.has_gain() { b.gain_db } else { 0.0 }, b.enabled))
             .collect()
+    }
+
+    fn eq_edit_band(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut engine::chain::EqParams, usize)) {
+        let (Some(id), band) = (self.eq.slot, self.eq.band) else { return };
+        self.edit_chain(cx, |c| {
+            if let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = c.slots.iter_mut().find(|s| s.id == id) {
+                f(eq, band);
+            }
+        });
+    }
+
+    fn eq_add_band(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let mut new_ix = 0;
+        self.eq_edit_band(cx, |eq, _| {
+            eq.bands.push(engine::chain::EqBand {
+                enabled: true,
+                kind: engine::dsp::FilterKind::Peak,
+                freq_hz: 1000.0,
+                gain_db: 0.0,
+                q: 1.0,
+                slope: 1,
+            });
+            new_ix = eq.bands.len() - 1;
+        });
+        self.select_band(new_ix, window, cx);
+    }
+
+    fn eq_remove_band(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.eq_edit_band(cx, |eq, band| {
+            if eq.bands.len() > 1 && band < eq.bands.len() {
+                eq.bands.remove(band);
+            }
+        });
+        self.select_band(self.eq.band.saturating_sub(1), window, cx);
+    }
+
+    // ---------- import ----------
+
+    fn pick_import(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let rx = cx.prompt_for_paths(PathPromptOptions {
+            files: true,
+            directories: false,
+            multiple: false,
+            prompt: Some("Import".into()),
+        });
+        cx.spawn_in(window, async move |this, cx| {
+            if let Ok(Ok(Some(paths))) = rx.await {
+                if let Some(path) = paths.into_iter().next() {
+                    let _ = this.update_in(cx, |this, window, cx| this.import_path(&path, window, cx));
+                }
+            }
+        })
+        .detach();
+    }
+
+    fn import_path(&mut self, path: &std::path::Path, window: &mut Window, cx: &mut Context<Self>) {
+        let file = path.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let result = self.state.update(cx, |s, _| s.import_file(path));
+        self.import_notice = Some(match result {
+            Ok(outcome) => {
+                let sev = if outcome.report.skipped.is_empty() && outcome.report.approximated.is_empty() {
+                    Severity::Success
+                } else {
+                    Severity::Info
+                };
+                (sev, outcome.title.clone(), outcome.summary())
+            }
+            Err(e) => (Severity::Error, format!("Couldn’t import “{file}”."), e),
+        });
+        // The presets list and selection may have changed.
+        let (presets, current) = {
+            let s = self.state.read(cx);
+            (s.presets.clone(), s.config.preset.clone())
+        };
+        let row = current.and_then(|c| presets.iter().position(|p| *p == c)).map(IndexPath::new);
+        let items: Vec<SharedString> = presets.into_iter().map(Into::into).collect();
+        self.preset_sel.update(cx, |s, cx| {
+            s.set_items(items, window, cx);
+            s.set_selected_index(row, window, cx);
+        });
+        self.eq.band = 0;
+        self.rebuild_cards(window, cx);
+        if let Some(id) = self.eq.slot {
+            if let Some(c) = self.cards.iter_mut().find(|c| c.id == id) {
+                c.expanded = true;
+            }
+        }
     }
 
     fn eq_mouse_down(&mut self, pos: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -362,7 +499,7 @@ impl MainView {
             .eq_handles(cx)
             .iter()
             .enumerate()
-            .map(|(i, (f, g))| {
+            .map(|(i, (f, g, _))| {
                 let (hx, hy) = (eq_x(*f) * w, eq_y(*g, h));
                 (i, ((hx - mx).powi(2) + (hy - my).powi(2)).sqrt())
             })
@@ -937,6 +1074,18 @@ impl MainView {
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.overwrite_preset(cx))),
             )
             .child(
+                fluent::button("import", cx)
+                    .child(fluent::glyph(g::IMPORT, 14.))
+                    .child("Import…")
+                    .tooltip(|w, cx| {
+                        gpui_component::tooltip::Tooltip::new(
+                            "Load an EasyEffects preset (.json) or an Equalizer APO / AutoEQ file (.txt). You can also drop files on the window.",
+                        )
+                        .build(w, cx)
+                    })
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.pick_import(window, cx))),
+            )
+            .child(
                 div()
                     .relative()
                     .child(fluent::button("save-as", cx).child("Save as…").on_click(cx.listener(
@@ -970,8 +1119,24 @@ impl MainView {
     }
 
     fn render_notices(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let s = self.state.read(cx);
         let mut out = vec![];
+        if let Some((sev, title, body)) = &self.import_notice {
+            out.push(
+                fluent::info_bar(*sev, title, body.clone(), cx)
+                    .child(
+                        fluent::subtle_button("dismiss-import", cx)
+                            .w(px(32.))
+                            .justify_center()
+                            .child(fluent::glyph(g::CANCEL, 10.))
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                                this.import_notice = None;
+                                cx.notify();
+                            })),
+                    )
+                    .into_any_element(),
+            );
+        }
+        let s = self.state.read(cx);
         if let Some(why) = self.status.input.as_ref().and_then(|i| i.exclusive_fallback.as_ref()) {
             out.push(
                 fluent::info_bar(
@@ -1034,8 +1199,13 @@ impl MainView {
                 chain
                     .slots
                     .iter()
-                    .filter(|s| !s.bypass && matches!(s.effect, EffectConfig::Filter(_) | EffectConfig::Eq(_)))
-                    .filter_map(|s| s.effect.response_db(freq(i), sr))
+                    .filter(|s| !s.bypass)
+                    .filter_map(|s| match &s.effect {
+                        // Filter shape only: the EQ's output gain has its own slider.
+                        EffectConfig::Eq(eq) => Some(eq.bands.iter().map(|b| b.response_db(freq(i), sr)).sum::<f32>()),
+                        f @ EffectConfig::Filter(_) => f.response_db(freq(i), sr),
+                        _ => None,
+                    })
                     .sum::<f32>()
             })
             .collect();
@@ -1093,10 +1263,11 @@ impl MainView {
                 )
                 .size_full(),
             )
-            .children(handles.iter().enumerate().map(|(i, (f, gdb))| {
+            .children(handles.iter().enumerate().map(|(i, (f, gdb, enabled))| {
                 let selected = i == sel;
                 let d = if selected { 18.0 } else { 14.0 };
                 div()
+                    .opacity(if *enabled { 1.0 } else { 0.4 })
                     .absolute()
                     .left(relative(eq_x(*f)))
                     .top(px(eq_y(*gdb, EQ_H) - d / 2.0))
@@ -1137,7 +1308,7 @@ impl MainView {
                 div().absolute().top_0().left(relative(eq_x(f))).ml(px(-8.)).child(t)
             }));
 
-        let cols = eq.bands.len().clamp(1, 6) as u16;
+        let cols = eq.bands.len().clamp(1, 8) as u16;
         let tiles = div()
             .grid()
             .grid_cols(cols)
@@ -1147,13 +1318,11 @@ impl MainView {
                 let row = |k: &str, v: String| {
                     div().flex().justify_between().text_color(p.text2).child(k.to_owned()).child(div().text_color(p.text).child(v))
                 };
-                let gain = if matches!(b.kind, engine::dsp::FilterKind::HighPass | engine::dsp::FilterKind::LowPass) {
-                    "—".to_string()
-                } else {
-                    params::format(params::Unit::Db, b.gain_db)
-                };
+                let gain = if b.kind.has_gain() { params::format(params::Unit::Db, b.gain_db) } else { "—".to_string() };
                 div()
                     .id(("band", i))
+                    .min_w_0()
+                    .when(!b.enabled, |d| d.opacity(0.55))
                     .flex()
                     .flex_col()
                     .gap(px(6.))
@@ -1184,7 +1353,14 @@ impl MainView {
                                     .font_weight(gpui::FontWeight::SEMIBOLD)
                                     .child((i + 1).to_string()),
                             )
-                            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(params::band_name(b))),
+                            .child(
+                                div()
+                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .whitespace_nowrap()
+                                    .overflow_hidden()
+                                    .text_ellipsis()
+                                    .child(if b.enabled { params::band_name(b) } else { "Off" }),
+                            ),
                     )
                     .child(row("Freq", params::format(params::Unit::Hz, b.freq_hz)))
                     .child(row("Gain", gain))
@@ -1192,11 +1368,56 @@ impl MainView {
                     .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.select_band(i, window, cx)))
             }));
 
+        let band_on = eq.bands.get(sel).is_some_and(|b| b.enabled);
+        let band_bar = div()
+            .flex()
+            .flex_row()
+            .flex_wrap()
+            .items_center()
+            .gap(px(12.))
+            .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(format!("Band {}", sel + 1)))
+            .children(self.eq.type_sel.as_ref().map(|s| div().w(px(160.)).child(Select::new(s))))
+            .child(fluent::switch("band-on", band_on, if band_on { "Turn this band off" } else { "Turn this band on" }, cx, {
+                let view = cx.entity();
+                move |on, _, cx| {
+                    view.update(cx, |this, cx| {
+                        this.eq_edit_band(cx, |eq, band| {
+                            if let Some(b) = eq.bands.get_mut(band) {
+                                b.enabled = on;
+                            }
+                        })
+                    })
+                }
+            }))
+            .child(div().flex_1())
+            .child(
+                fluent::button("band-add", cx)
+                    .child(fluent::glyph(g::ADD, 12.))
+                    .child("Add band")
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.eq_add_band(window, cx))),
+            )
+            .when(eq.bands.len() > 1, |d| {
+                d.child(
+                    fluent::subtle_button("band-remove", cx)
+                        .text_color(p.critical)
+                        .child("Remove band")
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.eq_remove_band(window, cx))),
+                )
+            });
+
         let editor = div()
             .grid()
-            .grid_cols(3)
+            .grid_cols(4)
             .gap_x(px(32.))
             .children(self.eq.ctls.iter().map(|c| slider_row(c, params::get(&slot.effect, c.spec.key), cx)));
+
+        let output = self.eq.gain_ctl.as_ref().map(|c| {
+            div()
+                .grid()
+                .grid_cols(4)
+                .gap_x(px(32.))
+                .child(slider_row(c, params::get(&slot.effect, c.spec.key), cx))
+        });
 
         div()
             .flex()
@@ -1205,7 +1426,9 @@ impl MainView {
             .child(graph)
             .child(axis)
             .child(tiles)
+            .child(band_bar)
             .child(editor)
+            .children(output)
             .child(fluent::caption("Drag the points to change frequency and gain; scroll over the graph to change Q.", cx))
             .into_any_element()
     }
@@ -1435,6 +1658,7 @@ impl Render for MainView {
         let empty = cards.is_empty();
 
         div()
+            .id("root")
             .size_full()
             .flex()
             .flex_col()
@@ -1442,6 +1666,12 @@ impl Render for MainView {
             .text_size(px(14.))
             .line_height(px(20.))
             .text_color(p.text)
+            .drag_over::<ExternalPaths>(move |s, _, _, _| s.bg(p.accent_fill))
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                if let Some(path) = paths.paths().first() {
+                    this.import_path(&path.clone(), window, cx);
+                }
+            }))
             .child(title_bar)
             .child(
                 div()

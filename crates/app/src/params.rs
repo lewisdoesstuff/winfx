@@ -24,6 +24,11 @@ pub enum ParamKey {
     BandFreq(usize),
     BandGain(usize),
     BandQ(usize),
+    BandSlope(usize),
+    /// Filter card slope.
+    Slope,
+    /// EQ output gain.
+    EqGain,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -34,6 +39,8 @@ pub enum Unit {
     DbAmount,
     Ms,
     Ratio,
+    /// Cascaded stages, shown as dB/oct.
+    Slope,
     None,
 }
 
@@ -59,6 +66,7 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
         EffectConfig::Filter(_) => vec![
             p(Freq, "Frequency", Hz, 20.0, 20_000.0, 1.0, true),
             p(Q, "Q", None, 0.3, 4.0, 0.01, false),
+            p(ParamKey::Slope, "Slope", Unit::Slope, 1.0, 4.0, 1.0, false),
         ],
         EffectConfig::Eq(e) => e
             .bands
@@ -71,8 +79,10 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
                     v.push(p(BandGain(i), &format!("{name} gain"), Db, -18.0, 18.0, 0.1, false));
                 }
                 v.push(p(BandQ(i), &format!("{name} Q"), None, 0.1, 10.0, 0.01, false));
+                v.push(p(BandSlope(i), &format!("{name} slope"), Unit::Slope, 1.0, 4.0, 1.0, false));
                 v
             })
+            .chain([p(EqGain, "Output gain", Db, -24.0, 24.0, 0.1, false)])
             .collect(),
         EffectConfig::Gate(_) => vec![
             p(Threshold, "Threshold", Db, -80.0, 0.0, 0.5, false),
@@ -102,17 +112,27 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
 }
 
 pub fn band_name(b: &EqBand) -> &'static str {
-    match b.kind {
-        FilterKind::LowShelf => "Low shelf",
-        FilterKind::HighShelf => "High shelf",
-        FilterKind::Peak => "Peak",
-        FilterKind::HighPass => "High-pass",
-        FilterKind::LowPass => "Low-pass",
-    }
+    if b.kind == FilterKind::Peak { "Peak" } else { kind_name(b.kind) }
 }
 
 fn has_gain(k: FilterKind) -> bool {
-    matches!(k, FilterKind::Peak | FilterKind::LowShelf | FilterKind::HighShelf)
+    k.has_gain()
+}
+
+/// Band types offered in the EQ editor, in menu order.
+pub const BAND_KINDS: &[(FilterKind, &str)] = &[
+    (FilterKind::Peak, "Bell"),
+    (FilterKind::LowShelf, "Low shelf"),
+    (FilterKind::HighShelf, "High shelf"),
+    (FilterKind::HighPass, "High-pass"),
+    (FilterKind::LowPass, "Low-pass"),
+    (FilterKind::Notch, "Notch"),
+    (FilterKind::BandPass, "Band-pass"),
+    (FilterKind::AllPass, "All-pass"),
+];
+
+pub fn kind_name(k: FilterKind) -> &'static str {
+    BAND_KINDS.iter().find(|(kk, _)| *kk == k).map_or("Bell", |(_, n)| n)
 }
 
 pub fn filter_name(f: &FilterParams) -> &'static str {
@@ -131,6 +151,9 @@ pub fn get(cfg: &EffectConfig, key: ParamKey) -> f32 {
         (EffectConfig::Eq(e), BandFreq(i)) => e.bands.get(i).map_or(0.0, |b| b.freq_hz),
         (EffectConfig::Eq(e), BandGain(i)) => e.bands.get(i).map_or(0.0, |b| b.gain_db),
         (EffectConfig::Eq(e), BandQ(i)) => e.bands.get(i).map_or(0.0, |b| b.q),
+        (EffectConfig::Eq(e), BandSlope(i)) => e.bands.get(i).map_or(1.0, |b| b.slope as f32),
+        (EffectConfig::Eq(e), EqGain) => e.gain_db,
+        (EffectConfig::Filter(f), ParamKey::Slope) => f.slope as f32,
         (EffectConfig::Gate(g), Threshold) => g.threshold_db,
         (EffectConfig::Gate(g), Hysteresis) => g.hysteresis_db,
         (EffectConfig::Gate(g), Attack) => g.attack_ms,
@@ -161,6 +184,9 @@ pub fn set(cfg: &mut EffectConfig, key: ParamKey, v: f32) {
         (EffectConfig::Eq(e), BandFreq(i)) => e.bands.get_mut(i).into_iter().for_each(|b| b.freq_hz = v),
         (EffectConfig::Eq(e), BandGain(i)) => e.bands.get_mut(i).into_iter().for_each(|b| b.gain_db = v),
         (EffectConfig::Eq(e), BandQ(i)) => e.bands.get_mut(i).into_iter().for_each(|b| b.q = v),
+        (EffectConfig::Eq(e), BandSlope(i)) => e.bands.get_mut(i).into_iter().for_each(|b| b.slope = v.round() as u8),
+        (EffectConfig::Eq(e), EqGain) => e.gain_db = v,
+        (EffectConfig::Filter(f), ParamKey::Slope) => f.slope = v.round() as u8,
         (EffectConfig::Gate(g), Threshold) => g.threshold_db = v,
         (EffectConfig::Gate(g), Hysteresis) => g.hysteresis_db = v,
         (EffectConfig::Gate(g), Attack) => g.attack_ms = v,
@@ -192,6 +218,7 @@ pub fn format(unit: Unit, v: f32) -> String {
         Unit::Ms if v < 10.0 => format!("{v:.1} ms"),
         Unit::Ms => format!("{v:.0} ms"),
         Unit::Ratio => format!("{v:.1}:1"),
+        Unit::Slope => format!("{} dB/oct", (v.round() as i32) * 12),
         Unit::None => format!("{v:.2}"),
     }
 }
@@ -213,15 +240,16 @@ pub fn new_effect(kind: &str) -> Option<EffectConfig> {
     use engine::chain::*;
     use engine::dsp::*;
     Some(match kind {
-        "High-pass" => EffectConfig::Filter(FilterParams { kind: FilterKind::HighPass, freq_hz: 80.0, q: 0.707 }),
-        "Low-pass" => EffectConfig::Filter(FilterParams { kind: FilterKind::LowPass, freq_hz: 12_000.0, q: 0.707 }),
+        "High-pass" => EffectConfig::Filter(FilterParams { kind: FilterKind::HighPass, freq_hz: 80.0, q: 0.707, slope: 1 }),
+        "Low-pass" => EffectConfig::Filter(FilterParams { kind: FilterKind::LowPass, freq_hz: 12_000.0, q: 0.707, slope: 1 }),
         "Equalizer" => EffectConfig::Eq(EqParams {
             bands: vec![
-                EqBand { enabled: true, kind: FilterKind::LowShelf, freq_hz: 120.0, gain_db: 0.0, q: 0.707 },
-                EqBand { enabled: true, kind: FilterKind::Peak, freq_hz: 500.0, gain_db: 0.0, q: 1.0 },
-                EqBand { enabled: true, kind: FilterKind::Peak, freq_hz: 3000.0, gain_db: 0.0, q: 1.0 },
-                EqBand { enabled: true, kind: FilterKind::HighShelf, freq_hz: 8000.0, gain_db: 0.0, q: 0.707 },
+                EqBand { enabled: true, kind: FilterKind::LowShelf, freq_hz: 120.0, gain_db: 0.0, q: 0.707, slope: 1 },
+                EqBand { enabled: true, kind: FilterKind::Peak, freq_hz: 500.0, gain_db: 0.0, q: 1.0, slope: 1 },
+                EqBand { enabled: true, kind: FilterKind::Peak, freq_hz: 3000.0, gain_db: 0.0, q: 1.0, slope: 1 },
+                EqBand { enabled: true, kind: FilterKind::HighShelf, freq_hz: 8000.0, gain_db: 0.0, q: 0.707, slope: 1 },
             ],
+            gain_db: 0.0,
         }),
         "Gate" => EffectConfig::Gate(GateParams::default()),
         "Compressor" => EffectConfig::Compressor(CompressorParams::default()),
@@ -238,10 +266,11 @@ pub const ADDABLE: &[&str] =
 pub fn summary(cfg: &EffectConfig) -> String {
     let db = |v: f32| format!("{v:.1} dB").replace('-', "−");
     let s = match cfg {
-        EffectConfig::Filter(f) => format!("{} · Q {:.2}", format(Unit::Hz, f.freq_hz), f.q),
+        EffectConfig::Filter(f) => format!("{} · {} · Q {:.2}", format(Unit::Hz, f.freq_hz), format(Unit::Slope, f.slope as f32), f.q),
         EffectConfig::Eq(e) => {
             let on = e.bands.iter().filter(|b| b.enabled).count();
-            format!("{on} band{}", if on == 1 { "" } else { "s" })
+            let g = if e.gain_db.abs() >= 0.05 { format!(" · {} out", format(Unit::Db, e.gain_db)) } else { String::new() };
+            format!("{on} band{}{g}", if on == 1 { "" } else { "s" })
         }
         EffectConfig::Gate(g) => format!("{} threshold · {:.0} dB range", db(g.threshold_db), g.range_db),
         EffectConfig::Compressor(c) => format!(

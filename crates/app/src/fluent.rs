@@ -15,11 +15,13 @@ pub const FONT_DISPLAY: &str = "Segoe UI Variable Display";
 pub const ICON_FONT: &str = "Segoe Fluent Icons";
 
 /// Segoe Fluent Icons code points.
+#[allow(dead_code)]
 pub mod g {
     pub const ADD: char = '\u{E710}';
     pub const CANCEL: char = '\u{E711}';
     pub const CHEVRON_DOWN: char = '\u{E70D}';
     pub const CHEVRON_UP: char = '\u{E70E}';
+    pub const IMPORT: char = '\u{E8B5}';
     pub const SAVE: char = '\u{E74E}';
     pub const MIC: char = '\u{E720}';
     pub const HEADPHONE: char = '\u{E7F6}';
@@ -35,6 +37,7 @@ pub mod g {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)] // complete token set; not every token is used yet
 pub struct Palette {
     pub dark: bool,
     pub mica_fallback: Hsla,
@@ -480,7 +483,8 @@ pub fn info_bar(sev: Severity, title: &str, message: String, cx: &App) -> Div {
                         .flex_wrap()
                         .gap_x(px(6.))
                         .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title.to_owned()))
-                        .child(div().text_color(p.text).child(message)),
+                        // Grows into the rest of the row and wraps; drops below the title when narrow.
+                        .child(div().flex_1().min_w(px(240.)).text_color(p.text).child(message)),
                 ),
         )
 }

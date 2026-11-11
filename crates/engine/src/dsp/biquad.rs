@@ -11,6 +11,16 @@ pub enum FilterKind {
     LowShelf,
     HighShelf,
     Peak,
+    Notch,
+    BandPass,
+    AllPass,
+}
+
+impl FilterKind {
+    /// Does this filter type have a gain parameter?
+    pub fn has_gain(self) -> bool {
+        matches!(self, FilterKind::Peak | FilterKind::LowShelf | FilterKind::HighShelf)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -42,6 +52,16 @@ impl Coeffs {
                 let b = (1.0 - cos) / 2.0;
                 (b, 1.0 - cos, b, 1.0 + alpha, -2.0 * cos, 1.0 - alpha)
             }
+            FilterKind::Notch => (1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            FilterKind::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            FilterKind::AllPass => (
+                1.0 - alpha,
+                -2.0 * cos,
+                1.0 + alpha,
+                1.0 + alpha,
+                -2.0 * cos,
+                1.0 - alpha,
+            ),
             FilterKind::Peak => (
                 1.0 + alpha * a,
                 -2.0 * cos,
@@ -155,6 +175,20 @@ mod tests {
         let hi = Coeffs::design(FilterKind::HighShelf, 9000.0, 0.707, -2.0, SR);
         assert!((hi.magnitude_db(20000.0, SR) + 2.0).abs() < 0.2);
         assert!(hi.magnitude_db(500.0, SR).abs() < 0.1);
+    }
+
+    #[test]
+    fn notch_bandpass_allpass() {
+        let n = Coeffs::design(FilterKind::Notch, 1000.0, 5.0, 0.0, SR);
+        assert!(n.magnitude_db(1000.0, SR) < -40.0);
+        assert!(n.magnitude_db(100.0, SR).abs() < 0.1);
+        let bp = Coeffs::design(FilterKind::BandPass, 1000.0, 1.0, 0.0, SR);
+        assert!(bp.magnitude_db(1000.0, SR).abs() < 0.01);
+        assert!(bp.magnitude_db(50.0, SR) < -20.0);
+        let ap = Coeffs::design(FilterKind::AllPass, 1000.0, 0.7, 0.0, SR);
+        for f in [50.0, 1000.0, 15_000.0] {
+            assert!(ap.magnitude_db(f, SR).abs() < 0.01);
+        }
     }
 
     #[test]

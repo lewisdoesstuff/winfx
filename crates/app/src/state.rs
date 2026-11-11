@@ -38,6 +38,8 @@ pub struct AppState {
     pub presets: Vec<String>,
     /// Preview mode: synthetic engine, nothing is written to disk.
     pub preview: bool,
+    /// File to import once the window opens (from the command line).
+    pub pending_import: Option<PathBuf>,
     dirty_since: Option<Instant>,
 }
 
@@ -85,6 +87,10 @@ impl AppState {
             comms_input: None,
             presets: vec![],
             preview,
+            pending_import: std::env::args_os()
+                .skip(1)
+                .map(PathBuf::from)
+                .find(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json") || e.eq_ignore_ascii_case("txt"))),
             dirty_since: None,
         };
         s.refresh_devices();
@@ -220,6 +226,76 @@ impl AppState {
         self.set_chain(chain);
         self.save();
         true
+    }
+
+    /// Import an EasyEffects preset (becomes a new preset, then loaded) or an
+    /// Equalizer APO / AutoEQ file (replaces the EQ in the current chain).
+    pub fn import_file(&mut self, path: &std::path::Path) -> Result<ImportOutcome, String> {
+        use engine::import::{import, Imported};
+        let text = std::fs::read_to_string(path).map_err(|e| format!("couldn't read the file: {e}"))?;
+        let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Imported".into());
+        match import(&text)? {
+            Imported::Chain(chain, report) => {
+                let name = self.unique_preset_name(&sanitize(&stem));
+                self.set_chain(chain);
+                self.save_preset(&name); // writes it and selects it
+                self.config.preset = Some(name.clone());
+                self.save();
+                Ok(ImportOutcome { title: format!("Imported “{name}” from EasyEffects"), report })
+            }
+            Imported::Eq(eq, report) => {
+                let mut chain = self.chain().clone();
+                let bands = eq.bands.len();
+                match chain.slots.iter_mut().find(|s| matches!(s.effect, engine::EffectConfig::Eq(_))) {
+                    Some(slot) => {
+                        slot.effect = engine::EffectConfig::Eq(eq);
+                        slot.bypass = false;
+                    }
+                    None => {
+                        let id = chain.next_id();
+                        // After any leading filters, before dynamics.
+                        let at = chain
+                            .slots
+                            .iter()
+                            .position(|s| !matches!(s.effect, engine::EffectConfig::Filter(_)))
+                            .unwrap_or(chain.slots.len());
+                        chain.slots.insert(at, engine::EffectSlot { id, bypass: false, effect: engine::EffectConfig::Eq(eq) });
+                    }
+                }
+                self.set_chain(chain);
+                Ok(ImportOutcome { title: format!("Loaded {bands}-band EQ from “{stem}”"), report })
+            }
+        }
+    }
+
+    fn unique_preset_name(&self, base: &str) -> String {
+        if !self.presets.iter().any(|p| p == base) {
+            return base.to_owned();
+        }
+        (2..).map(|n| format!("{base} ({n})")).find(|n| !self.presets.contains(n)).unwrap()
+    }
+}
+
+pub struct ImportOutcome {
+    pub title: String,
+    pub report: engine::import::ImportReport,
+}
+
+impl ImportOutcome {
+    /// One readable paragraph for the notice.
+    pub fn summary(&self) -> String {
+        let r = &self.report;
+        let mut parts = vec![];
+        if !r.mapped.is_empty() {
+            parts.push(format!("Imported: {}.", r.mapped.join(", ")));
+        }
+        if !r.approximated.is_empty() {
+            parts.push(format!("Approximated: {}.", r.approximated.join("; ")));
+        }
+        if !r.skipped.is_empty() {
+            parts.push(format!("Not supported, skipped: {}.", r.skipped.join(", ")));
+        }
+        parts.join(" ")
     }
 }
 

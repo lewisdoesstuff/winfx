@@ -8,6 +8,7 @@ pub mod chain;
 pub mod devices;
 pub mod dsp;
 mod engine;
+pub mod import;
 pub mod meters;
 pub mod resample;
 mod stream;
