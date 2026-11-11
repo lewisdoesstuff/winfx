@@ -32,6 +32,10 @@ fn main() {
         let d = devices::find(Dir::Output, &q).unwrap().unwrap_or_else(|| die(&format!("no output matches {q:?}")));
         config.output = DeviceSel::device(&d);
     }
+    if let Some(q) = get("--monitor") {
+        let d = devices::find(Dir::Output, &q).unwrap().unwrap_or_else(|| die(&format!("no output matches {q:?}")));
+        config.monitor = engine::MonitorConfig { enabled: true, device: DeviceSel::device(&d), volume_db: -6.0 };
+    }
     if let Some(c) = get("--channel") {
         config.input_channel = if c == "mix" {
             InputChannel::Mix
@@ -98,8 +102,13 @@ fn main() {
                     gr.push_str(&format!(" {}:{:4.1}", &name[..4], v));
                 }
             }
+            let mon = match (&st.monitor, &st.monitor_error) {
+                (Some(_), _) => format!(" | mon ~{:.0} ms xrun {}", st.monitor_latency_ms, m.monitor_underruns.load(Relaxed)),
+                (None, Some(e)) => format!(" | mon ERR {e}"),
+                _ => String::new(),
+            };
             print!(
-                "\r in {:6.1} dB | out {:6.1} dB | GR{} | buf {:5.2} ms {:+6.0} ppm | xrun {} ovf {} disc {}   ",
+                "\r in {:6.1} dB | out {:6.1} dB | GR{} | buf {:5.2} ms {:+6.0} ppm | xrun {} ovf {} disc {}{mon}   ",
                 db(m.in_peak.take()),
                 db(m.out_peak.take()),
                 gr,

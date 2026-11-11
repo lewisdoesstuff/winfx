@@ -1,10 +1,11 @@
 //! Control thread: owns the current config, starts/stops the capture+render
-//! pair, restarts it when a device fails or disappears, and forwards chain
-//! edits to the audio thread.
+//! pair (and the optional monitor stream), restarts them when a device fails
+//! or disappears, and forwards chain edits to the audio thread.
 
 use crate::chain::{Chain, ChainConfig};
 use crate::devices;
-use crate::meters::Meters;
+use crate::dsp::db_to_lin;
+use crate::meters::{AtomicF32, Meters};
 use crate::stream::{self, CaptureArgs, RenderArgs, Session, Side};
 use crate::{Error, Result, SAMPLE_RATE};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -18,6 +19,7 @@ use std::time::{Duration, Instant};
 #[serde(rename_all = "snake_case")]
 pub enum DeviceSel {
     /// Input: the Windows default recording device. Output: VB-Cable's "CABLE Input".
+    /// Monitor: the Windows default playback device.
     #[default]
     Default,
     /// A specific endpoint. Matched by ID first; if that's gone (some drivers,
@@ -56,6 +58,20 @@ impl Default for InputChannel {
     }
 }
 
+/// Hear the processed mic on a playback device (headphones).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MonitorConfig {
+    pub enabled: bool,
+    pub device: DeviceSel,
+    pub volume_db: f32,
+}
+
+impl Default for MonitorConfig {
+    fn default() -> Self {
+        MonitorConfig { enabled: false, device: DeviceSel::Default, volume_db: -6.0 }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EngineConfig {
     #[serde(default)]
@@ -70,6 +86,8 @@ pub struct EngineConfig {
     /// Open the mic in exclusive mode for lower latency (falls back to shared).
     #[serde(default = "yes")]
     pub exclusive_input: bool,
+    #[serde(default)]
+    pub monitor: MonitorConfig,
     pub chain: ChainConfig,
 }
 
@@ -90,6 +108,7 @@ impl Default for EngineConfig {
             input_channel: InputChannel::default(),
             safety_ms: default_safety_ms(),
             exclusive_input: true,
+            monitor: MonitorConfig::default(),
             chain: ChainConfig::default(),
         }
     }
@@ -130,11 +149,17 @@ pub struct Status {
     pub last_error: Option<String>,
     /// Estimated added latency from mic to cable, in ms.
     pub latency_ms: f32,
+    /// Monitor stream, when enabled and running.
+    pub monitor: Option<StreamInfo>,
+    pub monitor_error: Option<String>,
+    /// Estimated mic → headphones latency, in ms.
+    pub monitor_latency_ms: f32,
 }
 
 enum Cmd {
     SetChain(ChainConfig),
     SetConfig(EngineConfig),
+    SetMonitor(MonitorConfig),
     Shutdown,
 }
 
@@ -142,6 +167,7 @@ pub struct Engine {
     tx: mpsc::Sender<Cmd>,
     meters: Arc<Meters>,
     status: Arc<Mutex<Status>>,
+    monitor_gain: Arc<AtomicF32>,
     thread: Option<JoinHandle<()>>,
 }
 
@@ -150,14 +176,16 @@ impl Engine {
         let (tx, rx) = mpsc::channel();
         let meters = Arc::new(Meters::default());
         let status = Arc::new(Mutex::new(Status::default()));
+        let monitor_gain = Arc::new(AtomicF32::default());
+        monitor_gain.store(db_to_lin(config.monitor.volume_db));
         let thread = {
-            let (meters, status) = (meters.clone(), status.clone());
+            let ctx = Ctl { meters: meters.clone(), status: status.clone(), monitor_gain: monitor_gain.clone() };
             std::thread::Builder::new()
                 .name("winfx-control".into())
-                .spawn(move || control_loop(config, rx, meters, status))
+                .spawn(move || control_loop(config, rx, ctx))
                 .expect("spawn control thread")
         };
-        Engine { tx, meters, status, thread: Some(thread) }
+        Engine { tx, meters, status, monitor_gain, thread: Some(thread) }
     }
 
     /// Update effect parameters/order. Applied without restarting audio.
@@ -168,6 +196,17 @@ impl Engine {
     /// Change devices or other settings. Restarts the streams.
     pub fn set_config(&self, config: EngineConfig) {
         let _ = self.tx.send(Cmd::SetConfig(config));
+    }
+
+    /// Turn the monitor on/off or change its device. Doesn't touch the main path.
+    pub fn set_monitor(&self, monitor: MonitorConfig) {
+        self.monitor_gain.store(db_to_lin(monitor.volume_db));
+        let _ = self.tx.send(Cmd::SetMonitor(monitor));
+    }
+
+    /// Live monitor volume, no restart.
+    pub fn set_monitor_volume(&self, db: f32) {
+        self.monitor_gain.store(db_to_lin(db));
     }
 
     pub fn meters(&self) -> &Arc<Meters> {
@@ -188,45 +227,126 @@ impl Drop for Engine {
     }
 }
 
+struct Ctl {
+    meters: Arc<Meters>,
+    status: Arc<Mutex<Status>>,
+    monitor_gain: Arc<AtomicF32>,
+}
+
+struct MonitorRun {
+    session: Arc<Session>,
+    thread: JoinHandle<()>,
+}
+
+impl MonitorRun {
+    fn stop(self) {
+        self.session.stop.store(true, Relaxed);
+        let _ = self.thread.join();
+    }
+}
+
 struct Running {
     session: Arc<Session>,
     threads: Vec<JoinHandle<()>>,
     chain_tx: Producer<Box<Chain>>,
     trash_rx: Consumer<Box<Chain>>,
+    monitor_tx: Producer<Option<Producer<f32>>>,
+    monitor_trash_rx: Consumer<Producer<f32>>,
+    monitor: Option<MonitorRun>,
+    input_period: u32,
+    safety_frames: u32,
 }
 
 impl Running {
     fn stop(mut self) {
+        self.stop_monitor();
         self.session.stop.store(true, Relaxed);
         for t in self.threads.drain(..) {
             let _ = t.join();
         }
         while self.trash_rx.pop().is_ok() {}
+        while self.monitor_trash_rx.pop().is_ok() {}
+    }
+
+    fn stop_monitor(&mut self) {
+        if let Some(m) = self.monitor.take() {
+            // Detach from capture first so it stops writing, then stop the render.
+            let _ = self.monitor_tx.push(None);
+            m.stop();
+        }
+    }
+
+    fn start_monitor(&mut self, cfg: &MonitorConfig, ctl: &Ctl) -> Result<StreamInfo> {
+        self.stop_monitor();
+        let device = match &cfg.device {
+            DeviceSel::Device { id, name } => resolve(devices::Dir::Output, id, name)?,
+            DeviceSel::Default => devices::default_device(devices::Dir::Output, devices::Role::Console)
+                .ok_or("no default playback device")?,
+        };
+        if is_virtual_cable(&device.name) {
+            return Err(Error(format!(
+                "monitor output is \"{}\" — monitoring into the virtual cable would put your \
+                 voice into the mic twice. Pick your headphones.",
+                device.name
+            )));
+        }
+
+        let session = Arc::new(Session::default());
+        session.cap_period.store(self.input_period, Relaxed);
+        session.extra_frames.store(self.safety_frames, Relaxed);
+        let (ring_tx, ring_rx) = RingBuffer::<f32>::new(SAMPLE_RATE as usize / 2);
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let args = RenderArgs {
+            device_id: device.id,
+            ring: ring_rx,
+            meters: ctl.meters.clone(),
+            session: session.clone(),
+            monitor_gain: Some(ctl.monitor_gain.clone()),
+        };
+        let thread = spawn("winfx-monitor", move || stream::render_thread(args, ready_tx));
+        let run = MonitorRun { session, thread };
+
+        match ready_rx.recv_timeout(READY_TIMEOUT) {
+            Ok((_, Ok(info))) => {
+                if self.monitor_tx.push(Some(ring_tx)).is_err() {
+                    run.stop();
+                    return Err("couldn't attach monitor".into());
+                }
+                self.monitor = Some(run);
+                Ok(info)
+            }
+            Ok((_, Err(e))) => {
+                run.stop();
+                Err(e)
+            }
+            Err(_) => {
+                run.stop();
+                Err("timed out opening monitor device".into())
+            }
+        }
     }
 }
 
 const RETRY_EVERY: Duration = Duration::from_secs(2);
 const READY_TIMEOUT: Duration = Duration::from_secs(5);
 
-fn control_loop(
-    mut config: EngineConfig,
-    rx: mpsc::Receiver<Cmd>,
-    meters: Arc<Meters>,
-    status: Arc<Mutex<Status>>,
-) {
+fn ms(frames: u32) -> f32 {
+    frames as f32 * 1000.0 / SAMPLE_RATE as f32
+}
+
+fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     devices::ensure_com();
     let mut running: Option<Running> = None;
     let mut retry_at = Instant::now();
+    let mut monitor_retry_at: Option<Instant> = None;
 
     loop {
         if running.is_none() && Instant::now() >= retry_at {
-            match start(&config, &meters) {
+            match start(&config, &ctl.meters) {
                 Ok((r, input, output)) => {
-                    let ext = (config.safety_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as u32;
                     let target =
-                        stream::target_frames(input.period_frames, output.period_frames, ext);
-                    let ms = |f: u32| f as f32 * 1000.0 / SAMPLE_RATE as f32;
-                    let mut s = status.lock().unwrap();
+                        stream::target_frames(input.period_frames, output.period_frames, r.safety_frames);
+                    let mut s = ctl.status.lock().unwrap();
                     s.latency_ms = ms(input.period_frames)
                         + ms(target as u32)
                         + output.stream_latency_ms.max(ms(output.period_frames));
@@ -234,13 +354,15 @@ fn control_loop(
                     s.input = Some(input);
                     s.output = Some(output);
                     s.last_error = None;
-                    meters.reset_counters();
+                    ctl.meters.reset_counters();
                     running = Some(r);
+                    monitor_retry_at = config.monitor.enabled.then(Instant::now);
                 }
                 Err(e) => {
-                    let mut s = status.lock().unwrap();
+                    let mut s = ctl.status.lock().unwrap();
                     s.state = RunState::Retrying;
                     s.last_error = Some(e.0);
+                    s.monitor = None;
                     retry_at = Instant::now() + RETRY_EVERY;
                 }
             }
@@ -248,13 +370,46 @@ fn control_loop(
 
         if let Some(r) = &mut running {
             while r.trash_rx.pop().is_ok() {}
+            while r.monitor_trash_rx.pop().is_ok() {}
+
             if r.session.failed.load(Relaxed) {
                 let err = r.session.error.lock().unwrap().take();
                 running.take().unwrap().stop();
-                let mut s = status.lock().unwrap();
+                let mut s = ctl.status.lock().unwrap();
                 s.state = RunState::Retrying;
                 s.last_error = err;
+                s.monitor = None;
                 retry_at = Instant::now() + Duration::from_millis(500);
+            } else {
+                // Monitor failures only restart the monitor.
+                if r.monitor.as_ref().is_some_and(|m| m.session.failed.load(Relaxed)) {
+                    let err = r.monitor.as_ref().and_then(|m| m.session.error.lock().unwrap().take());
+                    r.stop_monitor();
+                    let mut s = ctl.status.lock().unwrap();
+                    s.monitor = None;
+                    s.monitor_error = err;
+                    monitor_retry_at = Some(Instant::now() + RETRY_EVERY);
+                }
+                if config.monitor.enabled && monitor_retry_at.is_some_and(|t| Instant::now() >= t) {
+                    let res = r.start_monitor(&config.monitor, &ctl);
+                    let mut s = ctl.status.lock().unwrap();
+                    match res {
+                        Ok(info) => {
+                            let target = stream::target_frames(r.input_period, info.period_frames, r.safety_frames);
+                            s.monitor_latency_ms = ms(r.input_period)
+                                + ms(target as u32)
+                                + info.stream_latency_ms.max(ms(info.period_frames));
+                            s.monitor = Some(info);
+                            s.monitor_error = None;
+                            monitor_retry_at = None;
+                        }
+                        Err(e) => {
+                            s.monitor = None;
+                            s.monitor_error = Some(e.0);
+                            monitor_retry_at = Some(Instant::now() + RETRY_EVERY);
+                        }
+                    }
+                }
             }
         }
 
@@ -270,8 +425,20 @@ fn control_loop(
                 if let Some(r) = running.take() {
                     r.stop();
                 }
-                status.lock().unwrap().state = RunState::Starting;
+                let mut s = ctl.status.lock().unwrap();
+                s.state = RunState::Starting;
+                s.monitor = None;
                 retry_at = Instant::now();
+            }
+            Ok(Cmd::SetMonitor(m)) => {
+                config.monitor = m;
+                if let Some(r) = &mut running {
+                    r.stop_monitor();
+                }
+                let mut s = ctl.status.lock().unwrap();
+                s.monitor = None;
+                s.monitor_error = None;
+                monitor_retry_at = config.monitor.enabled.then(Instant::now);
             }
             Ok(Cmd::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -281,7 +448,9 @@ fn control_loop(
     if let Some(r) = running.take() {
         r.stop();
     }
-    status.lock().unwrap().state = RunState::Stopped;
+    let mut s = ctl.status.lock().unwrap();
+    s.state = RunState::Stopped;
+    s.monitor = None;
 }
 
 fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, StreamInfo, StreamInfo)> {
@@ -309,14 +478,14 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         }
     };
 
+    let safety_frames = (config.safety_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as u32;
     let session = Arc::new(Session::default());
-    session.extra_frames.store(
-        (config.safety_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as u32,
-        Relaxed,
-    );
+    session.extra_frames.store(safety_frames, Relaxed);
     let (ring_tx, ring_rx) = RingBuffer::<f32>::new(SAMPLE_RATE as usize / 2);
     let (chain_tx, chain_rx) = RingBuffer::<Box<Chain>>::new(8);
     let (trash_tx, trash_rx) = RingBuffer::<Box<Chain>>::new(8);
+    let (monitor_tx, monitor_rx) = RingBuffer::<Option<Producer<f32>>>::new(4);
+    let (monitor_trash_tx, monitor_trash_rx) = RingBuffer::<Producer<f32>>::new(4);
     let (ready_tx, ready_rx) = mpsc::channel();
 
     let cap = CaptureArgs {
@@ -327,6 +496,8 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         chain_rx,
         trash_tx,
         ring: ring_tx,
+        monitor_rx,
+        monitor_trash: monitor_trash_tx,
         meters: meters.clone(),
         session: session.clone(),
     };
@@ -335,6 +506,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         ring: ring_rx,
         meters: meters.clone(),
         session: session.clone(),
+        monitor_gain: None,
     };
     let threads = vec![
         spawn("winfx-capture", {
@@ -343,7 +515,17 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         }),
         spawn("winfx-render", move || stream::render_thread(ren, ready_tx)),
     ];
-    let running = Running { session, threads, chain_tx, trash_rx };
+    let mut running = Running {
+        session,
+        threads,
+        chain_tx,
+        trash_rx,
+        monitor_tx,
+        monitor_trash_rx,
+        monitor: None,
+        input_period: 0,
+        safety_frames,
+    };
 
     let (mut input, mut output) = (None, None);
     let deadline = Instant::now() + READY_TIMEOUT;
@@ -366,7 +548,9 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
             (Side::Output, Ok(o)) => output = Some(o),
         }
     }
-    Ok((running, input.unwrap(), output.unwrap()))
+    let input = input.unwrap();
+    running.input_period = input.period_frames;
+    Ok((running, input, output.unwrap()))
 }
 
 fn is_virtual_cable(name: &str) -> bool {

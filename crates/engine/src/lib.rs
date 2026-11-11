@@ -13,7 +13,9 @@ pub mod resample;
 mod stream;
 
 pub use chain::{Chain, ChainConfig, EffectConfig, EffectSlot};
-pub use engine::{DeviceSel, Engine, EngineConfig, InputChannel, RunState, Status, StreamInfo};
+pub use engine::{
+    DeviceSel, Engine, EngineConfig, InputChannel, MonitorConfig, RunState, Status, StreamInfo,
+};
 pub use meters::Meters;
 
 /// The engine's internal processing rate. WASAPI converts to/from it when a

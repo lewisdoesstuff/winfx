@@ -32,6 +32,8 @@ pub struct MainView {
     output_sel: Entity<NameSelect>,
     preset_sel: Entity<NameSelect>,
     add_sel: Entity<NameSelect>,
+    monitor_sel: Entity<NameSelect>,
+    monitor_vol: Entity<SliderState>,
     preset_name: Entity<InputState>,
     cards: Vec<Card>,
     levels: Levels,
@@ -106,6 +108,17 @@ fn selected_row(list: &[engine::devices::DeviceInfo], sel: &DeviceSel) -> Option
     .map(IndexPath::new)
 }
 
+/// Monitor's "Default" means the Windows default playback device.
+fn monitor_row(list: &[engine::devices::DeviceInfo], sel: &DeviceSel) -> Option<IndexPath> {
+    match sel {
+        DeviceSel::Default => {
+            let def = engine::devices::default_device(engine::devices::Dir::Output, engine::devices::Role::Console)?;
+            list.iter().position(|d| d.id == def.id).map(IndexPath::new)
+        }
+        other => selected_row(list, other),
+    }
+}
+
 impl MainView {
     pub fn new(state: Entity<AppState>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let s = state.read(cx);
@@ -123,6 +136,12 @@ impl MainView {
             inputs.iter().map(|d| d.id.clone()).collect(),
             outputs.iter().map(|d| d.id.clone()).collect(),
         );
+        let mon_outputs = s.monitor_outputs();
+        let mon_row = monitor_row(&mon_outputs, &s.config.engine.monitor.device);
+        let mon_db = s.config.engine.monitor.volume_db;
+        let monitor_sel = cx.new(|cx| SelectState::new(names(&mon_outputs), mon_row, window, cx));
+        let monitor_vol =
+            cx.new(|_| SliderState::new().min(-40.0).max(6.0).step(0.5).default_value(mon_db));
 
         let input_sel = cx.new(|cx| SelectState::new(names(&inputs), input_row, window, cx));
         let output_sel = cx.new(|cx| SelectState::new(names(&outputs), output_row, window, cx));
@@ -171,6 +190,22 @@ impl MainView {
                 }
                 sel.update(cx, |s, cx| s.set_selected_index(None, window, cx));
             }),
+            cx.subscribe_in(&monitor_sel, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, _, cx| {
+                let SelectEvent::Confirm(Some(name)) = ev else { return };
+                this.state.update(cx, |s, _| {
+                    if let Some(d) = s.monitor_outputs().into_iter().find(|d| d.name == name.as_ref()) {
+                        s.set_monitor(|m| m.device = DeviceSel::device(&d));
+                    }
+                });
+                cx.notify();
+            }),
+            cx.subscribe_in(&monitor_vol, window, |this, _, ev: &SliderEvent, _, cx| {
+                if let SliderEvent::Change(v) = ev {
+                    let db = v.start();
+                    this.state.update(cx, |s, _| s.set_monitor_volume(db));
+                    cx.notify();
+                }
+            }),
         ];
 
         let ticker = cx.spawn_in(window, async move |this, cx| loop {
@@ -186,6 +221,8 @@ impl MainView {
             output_sel,
             preset_sel,
             add_sel,
+            monitor_sel,
+            monitor_vol,
             preset_name,
             cards: vec![],
             levels: Levels::default(),
@@ -300,9 +337,16 @@ impl MainView {
 
     /// Pick up hot-plugged / re-created endpoints.
     fn poll_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (inputs, outputs, ein, eout) = self.state.update(cx, |s, _| {
+        let (inputs, outputs, mons, ein, eout, emon) = self.state.update(cx, |s, _| {
             s.refresh_devices();
-            (s.inputs.clone(), s.outputs.clone(), s.config.engine.input.clone(), s.config.engine.output.clone())
+            (
+                s.inputs.clone(),
+                s.outputs.clone(),
+                s.monitor_outputs(),
+                s.config.engine.input.clone(),
+                s.config.engine.output.clone(),
+                s.config.engine.monitor.device.clone(),
+            )
         });
         let snap = (
             inputs.iter().map(|d| d.id.clone()).collect::<Vec<_>>(),
@@ -319,6 +363,10 @@ impl MainView {
         self.output_sel.update(cx, |s, cx| {
             s.set_items(names(&outputs), window, cx);
             s.set_selected_index(selected_row(&outputs, &eout), window, cx);
+        });
+        self.monitor_sel.update(cx, |s, cx| {
+            s.set_items(names(&mons), window, cx);
+            s.set_selected_index(monitor_row(&mons, &emon), window, cx);
         });
     }
 
@@ -579,6 +627,7 @@ impl MainView {
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let monitor = self.render_monitor(cx).into_any_element();
         let t = cx.theme();
         let s = self.state.read(cx);
         let exclusive = s.config.engine.exclusive_input;
@@ -595,13 +644,9 @@ impl MainView {
                 .unwrap_or_default()
         };
         let section = |title: &str| div().text_xs().text_color(t.muted_foreground).child(title.to_uppercase());
-        v_flex()
-            .w(px(300.))
-            .flex_none()
+        let content = v_flex()
             .p_4()
             .gap_3()
-            .border_r_1()
-            .border_color(t.border)
             .child(section("Input (microphone)"))
             .child(Select::new(&self.input_sel).placeholder("Choose mic"))
             .child(div().text_xs().text_color(t.muted_foreground).child(info(&self.status.input)))
@@ -628,7 +673,9 @@ impl MainView {
                     .text_color(t.muted_foreground)
                     .child("In Discord and other apps, select \"CABLE Output\" as the microphone."),
             )
-            .child(div().flex_1())
+            .child(div().h(px(8.)))
+            .child(monitor)
+            .child(div().h(px(8.)))
             .child(section("App"))
             .child(
                 Switch::new("autostart")
@@ -647,7 +694,57 @@ impl MainView {
                     .text_xs()
                     .text_color(t.muted_foreground)
                     .child("Closing this window keeps processing running in the tray."),
+            );
+        div()
+            .w(px(300.))
+            .flex_none()
+            .h_full()
+            .border_r_1()
+            .border_color(t.border)
+            .child(div().id("sidebar").size_full().child(content).overflow_y_scrollbar())
+    }
+
+    fn render_monitor(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let t = cx.theme();
+        let mon = &self.state.read(cx).config.engine.monitor;
+        let (enabled, vol) = (mon.enabled, mon.volume_db);
+        let status_line = match (&self.status.monitor, &self.status.monitor_error) {
+            (Some(_), _) => Some((t.muted_foreground, format!("~{:.0} ms to headphones", self.status.monitor_latency_ms))),
+            (None, Some(e)) if enabled => Some((t.danger, e.clone())),
+            _ if enabled => Some((t.muted_foreground, "Starting…".into())),
+            _ => None,
+        };
+        v_flex()
+            .gap_3()
+            .child(div().text_xs().text_color(t.muted_foreground).child("MONITOR"))
+            .child(
+                Switch::new("monitor")
+                    .checked(enabled)
+                    .label("Hear yourself (processed)")
+                    .small()
+                    .on_change(cx.listener(|this, on: &bool, _, cx| {
+                        let on = *on;
+                        this.state.update(cx, |s, _| s.set_monitor(|m| m.enabled = on));
+                        cx.notify();
+                    })),
             )
+            .when(enabled, |d| {
+                d.child(Select::new(&self.monitor_sel).placeholder("Headphones"))
+                    .child(
+                        h_flex()
+                            .gap_3()
+                            .child(div().text_xs().text_color(t.muted_foreground).child("Volume"))
+                            .child(div().flex_1().child(Slider::new(&self.monitor_vol)))
+                            .child(div().w(px(56.)).text_xs().text_right().child(format!("{vol:+.1} dB"))),
+                    )
+                    .children(status_line.map(|(c, s)| div().text_xs().text_color(c).child(s)))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(t.muted_foreground)
+                            .child("Use headphones — speakers will feed back into the mic."),
+                    )
+            })
     }
 
     fn render_card(&self, ix: usize, card: &Card, slot: &EffectSlot, cx: &mut Context<Self>) -> AnyElement {

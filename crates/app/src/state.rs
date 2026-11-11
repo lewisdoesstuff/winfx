@@ -132,6 +132,24 @@ impl AppState {
         self.save();
     }
 
+    /// Monitor on/off or device change: restarts only the monitor stream.
+    pub fn set_monitor(&mut self, f: impl FnOnce(&mut engine::MonitorConfig)) {
+        f(&mut self.config.engine.monitor);
+        self.engine.set_monitor(self.config.engine.monitor.clone());
+        self.save();
+    }
+
+    pub fn set_monitor_volume(&mut self, db: f32) {
+        self.config.engine.monitor.volume_db = db;
+        self.engine.set_monitor_volume(db);
+        self.dirty_since.get_or_insert_with(Instant::now);
+    }
+
+    /// Playback devices usable for monitoring (not the cable).
+    pub fn monitor_outputs(&self) -> Vec<DeviceInfo> {
+        self.outputs.iter().filter(|d| !is_cable(d)).cloned().collect()
+    }
+
     pub fn save_if_dirty(&mut self) {
         if self.dirty_since.is_some_and(|t| t.elapsed() > Duration::from_millis(750)) {
             self.save();

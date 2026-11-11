@@ -281,6 +281,9 @@ pub(crate) struct CaptureArgs {
     pub chain_rx: Consumer<Box<Chain>>,
     pub trash_tx: Producer<Box<Chain>>,
     pub ring: Producer<f32>,
+    /// Monitor ring producers arrive here (None = detach); old ones go back via trash.
+    pub monitor_rx: Consumer<Option<Producer<f32>>>,
+    pub monitor_trash: Producer<Producer<f32>>,
     pub meters: Arc<Meters>,
     pub session: Arc<Session>,
 }
@@ -330,6 +333,7 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
 
     let mut stalls = 0;
     let mut first_packet = true;
+    let mut monitor: Option<Producer<f32>> = None;
     while !a.session.stop.load(Relaxed) {
         if event.wait_for_event(EVENT_TIMEOUT_MS).is_err() {
             stalls += 1;
@@ -345,6 +349,11 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
             new.adopt_state(&mut a.chain);
             let old = std::mem::replace(&mut a.chain, new);
             let _ = a.trash_tx.push(old);
+        }
+        while let Ok(m) = a.monitor_rx.pop() {
+            if let Some(old) = std::mem::replace(&mut monitor, m) {
+                let _ = a.monitor_trash.push(old);
+            }
         }
 
         loop {
@@ -383,6 +392,12 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
             if let Ok(chunk) = a.ring.write_chunk_uninit(n.min(free)) {
                 chunk.fill_from_iter(block.iter().copied());
             }
+            if let Some(m) = &mut monitor {
+                let k = n.min(m.slots());
+                if let Ok(chunk) = m.write_chunk_uninit(k) {
+                    chunk.fill_from_iter(block.iter().copied());
+                }
+            }
         }
     }
     let _ = op.client.stop_stream();
@@ -394,6 +409,9 @@ pub(crate) struct RenderArgs {
     pub ring: Consumer<f32>,
     pub meters: Arc<Meters>,
     pub session: Arc<Session>,
+    /// Some = this is the monitor stream: apply this live gain (linear) and
+    /// keep its stats out of the main meters.
+    pub monitor_gain: Option<Arc<crate::meters::AtomicF32>>,
 }
 
 pub(crate) fn render_thread(a: RenderArgs, ready: Ready) {
@@ -412,6 +430,9 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
     let mut bytes = vec![0u8; buf_frames * block_align];
     let mut mono = vec![0f32; buf_frames];
     let mut rs = DriftResampler::new(SAMPLE_RATE);
+    let is_monitor = a.monitor_gain.is_some();
+    let gain_c = crate::dsp::time_coeff(10.0, SAMPLE_RATE as f32);
+    let mut gain = a.monitor_gain.as_ref().map_or(1.0, |g| g.load());
 
     ready(op.info.clone());
 
@@ -444,11 +465,22 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
         let block = &mut mono[..avail];
         let stats = rs.render(&mut a.ring, block);
         // The first moments after start are settling, not dropouts worth reporting.
-        if stats.underrun && started.elapsed() > STARTUP_GRACE {
-            a.meters.underruns.fetch_add(1, Relaxed);
-        }
-        if stats.dropped > 0 {
-            a.meters.overflows.fetch_add(1, Relaxed);
+        if is_monitor {
+            if stats.underrun && started.elapsed() > STARTUP_GRACE {
+                a.meters.monitor_underruns.fetch_add(1, Relaxed);
+            }
+            let target = a.monitor_gain.as_ref().map_or(1.0, |g| g.load());
+            for x in block.iter_mut() {
+                gain = gain * gain_c + target * (1.0 - gain_c);
+                *x *= gain;
+            }
+        } else {
+            if stats.underrun && started.elapsed() > STARTUP_GRACE {
+                a.meters.underruns.fetch_add(1, Relaxed);
+            }
+            if stats.dropped > 0 {
+                a.meters.overflows.fetch_add(1, Relaxed);
+            }
         }
 
         let out = &mut bytes[..avail * block_align];
@@ -460,8 +492,10 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
         }
         rc.write_to_device(out, None)?;
 
-        a.meters.fill_frames.store(a.ring.slots() as u32, Relaxed);
-        a.meters.drift_ppm.store(rs.ratio_ppm() as f32);
+        if !is_monitor {
+            a.meters.fill_frames.store(a.ring.slots() as u32, Relaxed);
+            a.meters.drift_ppm.store(rs.ratio_ppm() as f32);
+        }
     }
     let _ = op.client.stop_stream();
     Ok(())

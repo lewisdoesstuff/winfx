@@ -48,6 +48,8 @@ pub struct Meters {
     pub overflows: AtomicU64,
     /// Input packets flagged as discontinuous by WASAPI.
     pub discontinuities: AtomicU64,
+    /// Monitor (headphone) stream ran dry.
+    pub monitor_underruns: AtomicU64,
 }
 
 impl Meters {
@@ -55,6 +57,7 @@ impl Meters {
         self.underruns.store(0, Relaxed);
         self.overflows.store(0, Relaxed);
         self.discontinuities.store(0, Relaxed);
+        self.monitor_underruns.store(0, Relaxed);
     }
 }
 
