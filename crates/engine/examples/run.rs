@@ -44,7 +44,7 @@ fn main() {
         };
     }
     if let Some(ms) = get("--safety").and_then(|s| s.parse().ok()) {
-        config.safety_ms = ms;
+        config.min_safety_ms = ms;
     }
     if args.iter().any(|a| a == "--shared") {
         config.exclusive_input = false;
@@ -55,11 +55,18 @@ fn main() {
         }
     }
     let seconds: Option<u64> = get("--seconds").and_then(|s| s.parse().ok());
+    // --measure: run the click latency test once audio has settled.
+    let measure = args.iter().any(|a| a == "--measure");
+    if args.iter().any(|a| a == "--shared-out") {
+        config.exclusive_output = false;
+    }
 
     let slot_names: Vec<&str> = config.chain.slots.iter().map(|s| s.effect.name()).collect();
     let engine = Engine::start(config);
     let started = Instant::now();
     let mut last_state = None;
+    let mut measured = false;
+    let mut last_test = engine::LatencyTest::Idle;
 
     loop {
         std::thread::sleep(Duration::from_millis(250));
@@ -92,6 +99,15 @@ fn main() {
             }
         }
 
+        if measure && !measured && st.state == RunState::Running && started.elapsed() > Duration::from_secs(4) {
+            measured = true;
+            engine.measure_latency();
+        }
+        if st.latency_test != last_test {
+            last_test = st.latency_test.clone();
+            println!("
+latency test: {:?}", st.latency_test);
+        }
         if st.state == RunState::Running {
             let m = engine.meters();
             let db = |x: f32| lin_to_db(x).max(-99.0);
@@ -108,11 +124,13 @@ fn main() {
                 _ => String::new(),
             };
             print!(
-                "\r in {:6.1} dB | out {:6.1} dB | GR{} | buf {:5.2} ms {:+6.0} ppm | xrun {} ovf {} disc {}{mon}   ",
+                "\r in {:6.1} dB | out {:6.1} dB | GR{} | buf {:5.2}/{:5.2} ms (margin {:4.1}) {:+6.0} ppm | xrun {} ovf {} disc {}{mon}   ",
                 db(m.in_peak.take()),
                 db(m.out_peak.take()),
                 gr,
                 m.fill_frames.load(Relaxed) as f32 / 48.0,
+                m.target_frames.load(Relaxed) as f32 / 48.0,
+                m.margin_frames.load(Relaxed) as f32 / 48.0,
                 m.drift_ppm.load(),
                 m.underruns.load(Relaxed),
                 m.overflows.load(Relaxed),

@@ -32,8 +32,13 @@ pub(crate) struct Session {
     pub error: Mutex<Option<String>>,
     /// Capture period in frames, so render can size its buffer target.
     pub cap_period: AtomicU32,
-    /// Extra safety buffering in frames on top of the device periods.
+    /// Minimum extra safety buffering in frames on top of the device periods.
+    /// Render grows its own margin above this when dropouts happen.
     pub extra_frames: AtomicU32,
+    /// Latency test: capture mutes its output, then injects a click and
+    /// records the click's capture timestamp (QPC, 100 ns units).
+    pub inject_request: AtomicBool,
+    pub inject_qpc: std::sync::atomic::AtomicU64,
 }
 
 impl Session {
@@ -90,6 +95,17 @@ impl SampleFmt {
     }
 
     #[inline]
+    fn write(self, x: f32, out: &mut [u8]) {
+        let x = x.clamp(-1.0, 1.0);
+        match self {
+            SampleFmt::F32 => out[..4].copy_from_slice(&x.to_le_bytes()),
+            SampleFmt::I16 => out[..2].copy_from_slice(&((x * 32_767.0) as i16).to_le_bytes()),
+            SampleFmt::I24 => out[..3].copy_from_slice(&((x as f64 * 8_388_607.0) as i32).to_le_bytes()[..3]),
+            SampleFmt::I32 => out[..4].copy_from_slice(&((x as f64 * 2_147_483_647.0) as i32).to_le_bytes()),
+        }
+    }
+
+    #[inline]
     fn read(self, b: &[u8]) -> f32 {
         match self {
             SampleFmt::F32 => f32::from_le_bytes([b[0], b[1], b[2], b[3]]),
@@ -103,10 +119,10 @@ impl SampleFmt {
 /// Desired exclusive-mode period. The driver's minimum wins if it's larger.
 const EXCLUSIVE_PERIOD_HNS: i64 = 20_000; // 2 ms
 
-/// Open the mic in exclusive mode at 48 kHz in whatever sample format the
-/// device takes natively. Errors if the device is busy, disallows exclusive
-/// access, or can't do 48 kHz.
-fn open_exclusive_capture(device: &Device) -> Result<Opened> {
+/// Open a device in exclusive mode at 48 kHz in whatever sample format it
+/// takes natively. Errors if the device is busy, disallows exclusive access,
+/// or can't do 48 kHz.
+fn open_exclusive(device: &Device, dir: Direction) -> Result<Opened> {
     use windows::Win32::Media::Audio::AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED;
 
     let id = device.get_id()?;
@@ -132,7 +148,7 @@ fn open_exclusive_capture(device: &Device) -> Result<Opened> {
 
     let mut period = client.calculate_aligned_period_near(EXCLUSIVE_PERIOD_HNS, None, &format)?;
     let mode = |p| StreamMode::EventsExclusive { period_hns: p };
-    if let Err(e) = client.initialize_client(&format, Direction::Capture, mode(period), None) {
+    if let Err(e) = client.initialize_client(&format, dir, mode(period), None) {
         let unaligned = matches!(&e, wasapi::WasapiError::Windows(w) if w.code() == AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED);
         if !unaligned {
             return Err(e.into());
@@ -141,7 +157,7 @@ fn open_exclusive_capture(device: &Device) -> Result<Opened> {
         let frames = client.get_buffer_size()?;
         period = wasapi::calculate_period_100ns(frames as i64, sr as i64);
         client = device.get_iaudioclient()?;
-        client.initialize_client(&format, Direction::Capture, mode(period), None)?;
+        client.initialize_client(&format, dir, mode(period), None)?;
     }
 
     let period_frames = client.get_buffer_size()?;
@@ -297,7 +313,7 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
     let device = get_device(a.device_id.as_deref(), Direction::Capture)?;
     let mut exclusive_err = None;
     let op = if a.exclusive {
-        match open_exclusive_capture(&device) {
+        match open_exclusive(&device, Direction::Capture) {
             Ok(op) => Some(op),
             Err(e) => {
                 exclusive_err = Some(e.0);
@@ -334,6 +350,9 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
     let mut stalls = 0;
     let mut first_packet = true;
     let mut monitor: Option<Producer<f32>> = None;
+    // Latency test state: frames of silence left before / after the click.
+    let mut mute_before = 0usize;
+    let mut mute_after = 0usize;
     while !a.session.stop.load(Relaxed) {
         if event.wait_for_event(EVENT_TIMEOUT_MS).is_err() {
             stalls += 1;
@@ -385,6 +404,28 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
             a.meters.in_rms.raise(rms);
             a.chain.process(block, &a.meters);
 
+            if a.session.inject_request.swap(false, Relaxed) {
+                mute_before = SAMPLE_RATE as usize * 150 / 1000;
+            }
+            if mute_before > 0 || mute_after > 0 {
+                block.fill(0.0);
+                if mute_before > 0 {
+                    mute_before = mute_before.saturating_sub(n);
+                    if mute_before == 0 {
+                        // Click at the start of the next packet; its timestamp is that packet's.
+                        mute_after = SAMPLE_RATE as usize * 100 / 1000 + 1;
+                    }
+                } else if mute_after == SAMPLE_RATE as usize * 100 / 1000 + 1 {
+                    for (i, x) in block.iter_mut().take(48).enumerate() {
+                        *x = if i % 2 == 0 { 0.8 } else { -0.8 };
+                    }
+                    a.session.inject_qpc.store(info.timestamp, Relaxed);
+                    mute_after -= 1;
+                } else {
+                    mute_after = mute_after.saturating_sub(n);
+                }
+            }
+
             let free = a.ring.slots();
             if free < n {
                 a.meters.overflows.fetch_add(1, Relaxed);
@@ -412,7 +453,15 @@ pub(crate) struct RenderArgs {
     /// Some = this is the monitor stream: apply this live gain (linear) and
     /// keep its stats out of the main meters.
     pub monitor_gain: Option<Arc<crate::meters::AtomicF32>>,
+    /// Try exclusive mode first (only WinFX should be playing into the cable).
+    pub exclusive: bool,
 }
+
+/// Adaptive buffering: +1 ms per dropout (up to 10 ms), −0.5 ms after each
+/// clean stretch, never below the configured minimum.
+const MARGIN_STEP: u32 = SAMPLE_RATE / 1000;
+const MARGIN_MAX: u32 = SAMPLE_RATE / 100;
+const MARGIN_RELAX_AFTER: std::time::Duration = std::time::Duration::from_secs(120);
 
 pub(crate) fn render_thread(a: RenderArgs, ready: Ready) {
     let session = a.session.clone();
@@ -421,7 +470,25 @@ pub(crate) fn render_thread(a: RenderArgs, ready: Ready) {
 
 fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
     let device = get_device(Some(&a.device_id), Direction::Render)?;
-    let op = open(&device, Direction::Render)?;
+    let mut exclusive_err = None;
+    let op = if a.exclusive {
+        match open_exclusive(&device, Direction::Render) {
+            Ok(op) => Some(op),
+            Err(e) => {
+                exclusive_err = Some(e.0);
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let mut op = match op {
+        Some(op) => op,
+        None => open(&device, Direction::Render)?,
+    };
+    op.info.exclusive_fallback = exclusive_err;
+    let sample = op.sample;
+    let sbytes = sample.bytes();
     let rc = op.client.get_audiorenderclient()?;
     let event = op.client.set_get_eventhandle()?;
     let buf_frames = op.client.get_buffer_size()? as usize;
@@ -441,6 +508,8 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
     rc.write_to_device(&bytes[..avail * block_align], None)?;
     op.client.start_stream()?;
     let started = std::time::Instant::now();
+    let mut margin = a.session.extra_frames.load(Relaxed);
+    let mut clean_since = std::time::Instant::now();
 
     let mut stalls = 0;
     while !a.session.stop.load(Relaxed) {
@@ -453,11 +522,14 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
         }
         stalls = 0;
 
-        rs.set_target(target_frames(
-            a.session.cap_period.load(Relaxed),
-            op.period_frames,
-            a.session.extra_frames.load(Relaxed),
-        ));
+        let min_margin = a.session.extra_frames.load(Relaxed);
+        if clean_since.elapsed() > MARGIN_RELAX_AFTER && margin > min_margin {
+            margin = margin.saturating_sub(MARGIN_STEP / 2).max(min_margin);
+            clean_since = std::time::Instant::now();
+        }
+        margin = margin.max(min_margin);
+        let target = target_frames(a.session.cap_period.load(Relaxed), op.period_frames, margin);
+        rs.set_target(target);
         let avail = op.client.get_available_space_in_frames()? as usize;
         if avail == 0 {
             continue;
@@ -465,6 +537,10 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
         let block = &mut mono[..avail];
         let stats = rs.render(&mut a.ring, block);
         // The first moments after start are settling, not dropouts worth reporting.
+        if stats.underrun && started.elapsed() > STARTUP_GRACE {
+            margin = (margin + MARGIN_STEP).min(MARGIN_MAX.max(min_margin));
+            clean_since = std::time::Instant::now();
+        }
         if is_monitor {
             if stats.underrun && started.elapsed() > STARTUP_GRACE {
                 a.meters.monitor_underruns.fetch_add(1, Relaxed);
@@ -485,9 +561,8 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
 
         let out = &mut bytes[..avail * block_align];
         for (frame, &x) in out.chunks_exact_mut(block_align).zip(block.iter()) {
-            let b = x.to_le_bytes();
             for c in 0..ch {
-                frame[c * 4..c * 4 + 4].copy_from_slice(&b);
+                sample.write(x, &mut frame[c * sbytes..]);
             }
         }
         rc.write_to_device(out, None)?;
@@ -495,8 +570,67 @@ fn render(mut a: RenderArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> {
         if !is_monitor {
             a.meters.fill_frames.store(a.ring.slots() as u32, Relaxed);
             a.meters.drift_ppm.store(rs.ratio_ppm() as f32);
+            a.meters.margin_frames.store(margin, Relaxed);
+            a.meters.target_frames.store(target as u32, Relaxed);
         }
     }
     let _ = op.client.stop_stream();
     Ok(())
+}
+
+/// Latency test listener: open the cable's recording side, ask the capture
+/// thread for `trials` clicks, and time each from its capture timestamp to its
+/// arrival here. Both timestamps are WASAPI's QPC positions (100 ns units).
+pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usize) -> Result<Vec<f32>> {
+    let device = get_device(Some(device_id), Direction::Capture)?;
+    let op = open(&device, Direction::Capture)?;
+    let cap = op.client.get_audiocaptureclient()?;
+    let event = op.client.set_get_eventhandle()?;
+    let buf_frames = op.client.get_buffer_size()? as usize;
+    let block_align = op.format.get_blockalign() as usize;
+    let mut bytes = vec![0u8; buf_frames * block_align];
+    op.client.start_stream()?;
+
+    let mut results = vec![];
+    for _ in 0..trials {
+        session.inject_qpc.store(0, Relaxed);
+        session.inject_request.store(true, Relaxed);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(1500);
+        let mut found = None;
+        'trial: while found.is_none() && std::time::Instant::now() < deadline {
+            if session.stop.load(Relaxed) {
+                break;
+            }
+            if event.wait_for_event(100).is_err() {
+                continue;
+            }
+            loop {
+                if let Some(0) = cap.get_next_packet_size()? {
+                    break;
+                }
+                let (n, info) = cap.read_from_device(&mut bytes)?;
+                if n == 0 {
+                    break;
+                }
+                let injected = session.inject_qpc.load(Relaxed);
+                if injected == 0 {
+                    continue; // still in the silence before the click; just drain
+                }
+                if info.timestamp == 0 || info.flags.timestamp_error {
+                    return Err("the virtual cable doesn't report timestamps".into());
+                }
+                for (i, frame) in bytes[..n as usize * block_align].chunks_exact(block_align).enumerate() {
+                    let arrival = info.timestamp + (i as u64 * 10_000_000) / SAMPLE_RATE as u64;
+                    if arrival > injected && f32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]).abs() > 0.3 {
+                        found = Some((arrival - injected) as f32 / 10_000.0);
+                        break 'trial;
+                    }
+                }
+            }
+        }
+        results.extend(found);
+        std::thread::sleep(std::time::Duration::from_millis(250));
+    }
+    let _ = op.client.stop_stream();
+    Ok(results)
 }

@@ -825,6 +825,21 @@ impl MainView {
             .child(caption_button("cap-close", g::CLOSE, WindowControlArea::Close, true, cx))
     }
 
+    /// WinFX's own buffering right now: input period + ring target + output period + chain.
+    fn latency_estimate_ms(&self, cx: &App) -> Option<f32> {
+        let (i, o) = (self.status.input.as_ref()?, self.status.output.as_ref()?);
+        let s = self.state.read(cx);
+        let target = s.engine.meters().target_frames.load(Relaxed) as f32;
+        Some((i.period_frames as f32 + target + o.period_frames as f32) / 48.0 + s.chain().latency_ms())
+    }
+
+    fn measured_latency_ms(&self) -> Option<f32> {
+        match self.status.latency_test {
+            engine::LatencyTest::Done { path_ms, chain_ms, .. } => Some(path_ms + chain_ms),
+            _ => None,
+        }
+    }
+
     fn render_status(&self, cx: &mut Context<Self>) -> AnyElement {
         let st = &self.status;
         let meters = self.state.read(cx).engine.meters().clone();
@@ -834,8 +849,12 @@ impl MainView {
                 if dropouts > 0 { Severity::Warning } else { Severity::Success },
                 "Processing",
                 format!(
-                    "~{:.0} ms added latency · {}",
-                    st.latency_ms,
+                    "{} · {}",
+                    match (self.measured_latency_ms(), self.latency_estimate_ms(cx)) {
+                        (Some(m), _) => format!("{m:.0} ms measured latency"),
+                        (None, Some(e)) => format!("~{e:.0} ms in WinFX"),
+                        _ => format!("~{:.0} ms added latency", st.latency_ms),
+                    },
                     match dropouts {
                         0 => "no dropouts".to_string(),
                         1 => "1 dropout".to_string(),
@@ -908,14 +927,90 @@ impl MainView {
                     })),
             );
 
+        let exclusive_out = s.config.engine.exclusive_output;
+        let output_caption = match &self.status.output {
+            Some(o) if o.exclusive => format!("Exclusive · {:.1} ms period · pick “CABLE Output” in Discord", o.period_frames as f32 / 48.0),
+            Some(o) => format!("Shared · {:.1} ms period · pick “CABLE Output” in Discord", o.period_frames as f32 / 48.0),
+            None => "In Discord, pick “CABLE Output”".into(),
+        };
+        let measuring = self.status.latency_test == engine::LatencyTest::Running;
+        let margin_ms = s.engine.meters().margin_frames.load(Relaxed) as f32 / 48.0;
+        let (latency_line, latency_detail, latency_detail_color) = match &self.status.latency_test {
+            engine::LatencyTest::Done { path_ms, min_ms, max_ms, chain_ms, trials } => (
+                format!("Latency: {:.1} ms measured", path_ms + chain_ms),
+                format!(
+                    "Mic capture → CABLE Output, median of {trials} ({:.1}–{:.1} ms) · buffer margin {margin_ms:.1} ms",
+                    min_ms + chain_ms,
+                    max_ms + chain_ms
+                ),
+                p.text2,
+            ),
+            engine::LatencyTest::Failed(e) => ("Latency: couldn’t measure".to_string(), e.clone(), p.critical),
+            _ => (
+                match self.latency_estimate_ms(cx) {
+                    Some(e) => format!("Latency: ~{e:.0} ms in WinFX"),
+                    None => "Latency: —".into(),
+                },
+                format!("Buffer margin {margin_ms:.1} ms, adapts to dropouts · Measure for the full path"),
+                p.text2,
+            ),
+        };
         let cable_card = fluent::card(cx)
             .p(px(16.))
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(header(plug, "Virtual microphone", "In Discord, pick “CABLE Output”".into()))
+            .child(header(plug, "Virtual microphone", output_caption))
             .child(Select::new(&self.output_sel).placeholder("Choose output"))
-            .child(fluent::level_meter("Output level", self.levels.out_peak, self.levels.out_rms, cx));
+            .child(fluent::level_meter("Output level", self.levels.out_peak, self.levels.out_rms, cx))
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .child("Exclusive mode")
+                    .child(fluent::switch(
+                        "exclusive-out",
+                        exclusive_out,
+                        "Lowest latency; only WinFX can play into the cable",
+                        cx,
+                        {
+                            let state = self.state.clone();
+                            move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_output = on))
+                        },
+                    )),
+            )
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(8.))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .child(latency_line)
+                            .child(div().text_xs().line_height(px(16.)).text_color(latency_detail_color).child(latency_detail)),
+                    )
+                    .child(
+                        fluent::button("measure", cx)
+                            .when(measuring, |b| b.opacity(0.5))
+                            .child(if measuring { "Measuring…" } else { "Measure" })
+                            .tooltip(|w, cx| {
+                                gpui_component::tooltip::Tooltip::new(
+                                    "Sends 5 short clicks through the virtual mic and times them. Anyone listening to CABLE Output will hear them.",
+                                )
+                                .build(w, cx)
+                            })
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                if !measuring {
+                                    this.state.read(cx).engine.measure_latency();
+                                }
+                            })),
+                    ),
+            );
 
         let mon_caption = match (&self.status.monitor, &self.status.monitor_error) {
             _ if !mon.enabled => "Hear yourself through headphones".to_string(),

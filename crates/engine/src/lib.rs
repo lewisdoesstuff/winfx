@@ -15,7 +15,8 @@ mod stream;
 
 pub use chain::{Chain, ChainConfig, EffectConfig, EffectSlot};
 pub use engine::{
-    DeviceSel, Engine, EngineConfig, InputChannel, MonitorConfig, RunState, Status, StreamInfo,
+    DeviceSel, Engine, EngineConfig, InputChannel, LatencyTest, MonitorConfig, RunState, Status,
+    StreamInfo,
 };
 pub use meters::Meters;
 

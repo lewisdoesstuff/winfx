@@ -80,20 +80,24 @@ pub struct EngineConfig {
     pub output: DeviceSel,
     #[serde(default)]
     pub input_channel: InputChannel,
-    /// Extra buffering on top of the device periods, in ms. Raise if you hear dropouts.
-    #[serde(default = "default_safety_ms")]
-    pub safety_ms: f32,
+    /// Minimum extra buffering on top of the device periods, in ms. The render
+    /// side adds more by itself when dropouts happen and relaxes back later.
+    #[serde(default = "default_min_safety_ms")]
+    pub min_safety_ms: f32,
     /// Open the mic in exclusive mode for lower latency (falls back to shared).
     #[serde(default = "yes")]
     pub exclusive_input: bool,
+    /// Open the virtual cable in exclusive mode (only WinFX plays into it).
+    #[serde(default = "yes")]
+    pub exclusive_output: bool,
     #[serde(default)]
     pub monitor: MonitorConfig,
     pub chain: ChainConfig,
 }
 
-/// 2 ms gave ~2 underruns/min on EVO 4 (exclusive, 3 ms) → VB-Cable; 4 ms gave none.
-fn default_safety_ms() -> f32 {
-    4.0
+/// Starting margin; the adaptive margin grows from here on real dropouts.
+fn default_min_safety_ms() -> f32 {
+    1.0
 }
 
 fn yes() -> bool {
@@ -106,8 +110,9 @@ impl Default for EngineConfig {
             input: DeviceSel::Default,
             output: DeviceSel::Default,
             input_channel: InputChannel::default(),
-            safety_ms: default_safety_ms(),
+            min_safety_ms: default_min_safety_ms(),
             exclusive_input: true,
+            exclusive_output: true,
             monitor: MonitorConfig::default(),
             chain: ChainConfig::default(),
         }
@@ -154,12 +159,33 @@ pub struct Status {
     pub monitor_error: Option<String>,
     /// Estimated mic → headphones latency, in ms.
     pub monitor_latency_ms: f32,
+    pub latency_test: LatencyTest,
+}
+
+/// Measured mic → virtual-mic latency (click injected after capture, timed at
+/// CABLE Output with the hardware timestamps of both streams).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub enum LatencyTest {
+    #[default]
+    Idle,
+    Running,
+    Done {
+        /// Capture timestamp of the click → its arrival at CABLE Output, median.
+        path_ms: f32,
+        min_ms: f32,
+        max_ms: f32,
+        /// Latency the chain itself adds (limiter look-ahead), not seen by the test.
+        chain_ms: f32,
+        trials: usize,
+    },
+    Failed(String),
 }
 
 enum Cmd {
     SetChain(ChainConfig),
     SetConfig(EngineConfig),
     SetMonitor(MonitorConfig),
+    MeasureLatency,
     Shutdown,
 }
 
@@ -214,6 +240,12 @@ impl Engine {
         let _ = self.tx.send(Cmd::SetMonitor(monitor));
     }
 
+    /// Send a few clicks through the virtual mic and time them. Results land
+    /// in `Status::latency_test`. Anyone listening to the virtual mic hears the clicks.
+    pub fn measure_latency(&self) {
+        let _ = self.tx.send(Cmd::MeasureLatency);
+    }
+
     /// Live monitor volume, no restart.
     pub fn set_monitor_volume(&self, db: f32) {
         self.monitor_gain.store(db_to_lin(db));
@@ -265,6 +297,7 @@ struct Running {
     monitor: Option<MonitorRun>,
     input_period: u32,
     safety_frames: u32,
+    output_name: String,
 }
 
 impl Running {
@@ -312,6 +345,7 @@ impl Running {
             meters: ctl.meters.clone(),
             session: session.clone(),
             monitor_gain: Some(ctl.monitor_gain.clone()),
+            exclusive: false,
         };
         let thread = spawn("winfx-monitor", move || stream::render_thread(args, ready_tx));
         let run = MonitorRun { session, thread };
@@ -450,6 +484,19 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                 s.monitor_error = None;
                 monitor_retry_at = config.monitor.enabled.then(Instant::now);
             }
+            Ok(Cmd::MeasureLatency) => {
+                let mut s = ctl.status.lock().unwrap();
+                match &running {
+                    _ if s.latency_test == LatencyTest::Running => {}
+                    None => s.latency_test = LatencyTest::Failed("audio isn't running".into()),
+                    Some(r) => {
+                        s.latency_test = LatencyTest::Running;
+                        let (session, out_name, status) = (r.session.clone(), r.output_name.clone(), ctl.status.clone());
+                        let chain_ms = config.chain.latency_ms();
+                        spawn("winfx-latency", move || measure_latency(session, out_name, status, chain_ms));
+                    }
+                }
+            }
             Ok(Cmd::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
         }
@@ -496,6 +543,10 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
             Ok(Cmd::SetMonitor(m)) => {
                 config.monitor = m;
                 ctl.status.lock().unwrap().monitor = config.monitor.enabled.then(monitor_info);
+            }
+            Ok(Cmd::MeasureLatency) => {
+                ctl.status.lock().unwrap().latency_test =
+                    LatencyTest::Failed("not available in preview mode".into());
             }
             Ok(Cmd::Shutdown) | Err(mpsc::RecvTimeoutError::Disconnected) => break,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -552,7 +603,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         }
     };
 
-    let safety_frames = (config.safety_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as u32;
+    let safety_frames = (config.min_safety_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as u32;
     let session = Arc::new(Session::default());
     session.extra_frames.store(safety_frames, Relaxed);
     let (ring_tx, ring_rx) = RingBuffer::<f32>::new(SAMPLE_RATE as usize / 2);
@@ -581,6 +632,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         meters: meters.clone(),
         session: session.clone(),
         monitor_gain: None,
+        exclusive: config.exclusive_output,
     };
     let threads = vec![
         spawn("winfx-capture", {
@@ -599,6 +651,7 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
         monitor: None,
         input_period: 0,
         safety_frames,
+        output_name: String::new(),
     };
 
     let (mut input, mut output) = (None, None);
@@ -624,7 +677,38 @@ fn start(config: &EngineConfig, meters: &Arc<Meters>) -> Result<(Running, Stream
     }
     let input = input.unwrap();
     running.input_period = input.period_frames;
+    running.output_name = output.as_ref().map(|o| o.name.clone()).unwrap_or_default();
     Ok((running, input, output.unwrap()))
+}
+
+/// Runs on its own thread: find the cable's recording side, listen for the
+/// clicks the capture thread injects, and publish the result.
+fn measure_latency(session: Arc<Session>, out_name: String, status: Arc<Mutex<Status>>, chain_ms: f32) {
+    devices::ensure_com();
+    let result = (|| -> Result<Vec<f32>> {
+        // VB-Cable pairs "CABLE Input (…)" (playback) with "CABLE Output (…)" (recording).
+        let rec_name = out_name.replacen("Input", "Output", 1);
+        let rec = devices::list(devices::Dir::Input)?
+            .into_iter()
+            .find(|d| d.active && d.name == rec_name)
+            .ok_or_else(|| Error(format!("couldn't find \"{rec_name}\", the recording side of the virtual mic")))?;
+        stream::listen_for_clicks(&rec.id, &session, 5)
+    })();
+    let mut s = status.lock().unwrap();
+    s.latency_test = match result {
+        Ok(mut v) if !v.is_empty() => {
+            v.sort_by(f32::total_cmp);
+            LatencyTest::Done {
+                path_ms: v[v.len() / 2],
+                min_ms: v[0],
+                max_ms: v[v.len() - 1],
+                chain_ms,
+                trials: v.len(),
+            }
+        }
+        Ok(_) => LatencyTest::Failed("no click arrived at CABLE Output".into()),
+        Err(e) => LatencyTest::Failed(e.0),
+    };
 }
 
 fn is_virtual_cable(name: &str) -> bool {

@@ -50,6 +50,9 @@ pub struct Meters {
     pub discontinuities: AtomicU64,
     /// Monitor (headphone) stream ran dry.
     pub monitor_underruns: AtomicU64,
+    /// Current adaptive safety margin and total buffer target (frames).
+    pub margin_frames: AtomicU32,
+    pub target_frames: AtomicU32,
 }
 
 impl Meters {

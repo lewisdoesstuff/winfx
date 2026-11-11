@@ -173,6 +173,21 @@ impl ChainConfig {
         }
     }
 
+    /// Delay the chain itself adds, in ms (limiter look-ahead; the filters are minimum-phase).
+    pub fn latency_ms(&self) -> f32 {
+        self.slots
+            .iter()
+            .filter(|s| !s.bypass)
+            .map(|s| match &s.effect {
+                EffectConfig::Limiter(l) => {
+                    let frames = (l.lookahead_ms.clamp(0.1, 20.0) * 0.001 * crate::SAMPLE_RATE as f32).round().max(1.0);
+                    frames * 1000.0 / crate::SAMPLE_RATE as f32
+                }
+                _ => 0.0,
+            })
+            .sum()
+    }
+
     pub fn next_id(&self) -> u32 {
         self.slots.iter().map(|s| s.id).max().unwrap_or(0) + 1
     }
