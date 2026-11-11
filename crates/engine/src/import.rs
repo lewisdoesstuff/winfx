@@ -15,6 +15,7 @@ use crate::chain::{ChainConfig, EffectConfig, EffectSlot, EqBand, EqParams, Filt
 use crate::dsp::{
     AutogainParams, BassEnhancerParams, CompressorParams, DeesserMode, DeesserParams, ExciterParams,
     ExpanderParams, FilterKind, GainParams, GateParams, LimiterParams, MaximizerParams,
+    AutotuneParams, CrusherParams, HarmonizerParams, PitchParams, ReverbParams, Scale,
 };
 use serde_json::Value;
 
@@ -335,6 +336,94 @@ pub fn from_easyeffects(json: &str) -> Result<(ChainConfig, ImportReport), Strin
                 b.report.approximated.push("Bass enhancer: Calf's harmonic blend".into());
                 b.gain(out_gain, bypass, "Bass enhancer output gain");
             }
+            "pitch" => {
+                let (wet, dry) = (crate::dsp::db_to_lin(num(p, "wet", 0.0)), crate::dsp::db_to_lin(num(p, "dry", -100.0)));
+                b.push(
+                    EffectConfig::Pitch(PitchParams {
+                        semitones: (num(p, "semitones", 0.0) + 12.0 * num(p, "octaves", 0.0)).clamp(-24.0, 24.0),
+                        cents: num(p, "cents", 0.0),
+                        mix: (wet / (wet + dry).max(1e-6)).clamp(0.0, 1.0),
+                        window_ms: 40.0,
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Pitch shift".into());
+                b.gain(in_gain + out_gain, bypass, "Pitch shift gain");
+            }
+            "autotune" => {
+                const NOTES: [&str; 12] = ["note-c", "note-c-sharp", "note-d", "note-d-sharp", "note-e", "note-f", "note-f-sharp", "note-g", "note-g-sharp", "note-a", "note-a-sharp", "note-b"];
+                let on: Vec<bool> = NOTES.iter().map(|k| p.get(*k).and_then(Value::as_bool).unwrap_or(true)).collect();
+                const MAJOR: [usize; 7] = [0, 2, 4, 5, 7, 9, 11];
+                const MINOR: [usize; 7] = [0, 2, 3, 5, 7, 8, 10];
+                let fits = |steps: &[usize; 7], key: usize| (0..12).all(|n| on[n] == steps.iter().any(|s| (s + key) % 12 == n));
+                let (key, scale) = if on.iter().all(|x| *x) {
+                    (0, Scale::Chromatic)
+                } else if let Some(k) = (0..12).find(|&k| fits(&MAJOR, k)) {
+                    (k, Scale::Major)
+                } else if let Some(k) = (0..12).find(|&k| fits(&MINOR, k)) {
+                    (k, Scale::Minor)
+                } else {
+                    b.report.approximated.push("Autotune: custom note set imported as chromatic".into());
+                    (0, Scale::Chromatic)
+                };
+                b.push(
+                    EffectConfig::Autotune(AutotuneParams {
+                        key: key as u8,
+                        scale,
+                        speed_ms: (num(p, "filter", 0.1) * 300.0).clamp(0.0, 200.0),
+                        mix: num(p, "correction", 1.0).clamp(0.0, 1.0),
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Autotune".into());
+                b.gain(in_gain + out_gain, bypass, "Autotune gain");
+            }
+            "harmonizer" => {
+                let wet = (num(p, "dry-wet", 63.0) / 127.0).clamp(0.0, 1.0);
+                let voice = crate::dsp::lin_to_db(wet.max(1e-4));
+                b.push(
+                    EffectConfig::Harmonizer(HarmonizerParams {
+                        voice1_semitones: num(p, "interval-left", 4.0),
+                        voice1_db: voice - 3.0,
+                        voice2_semitones: num(p, "interval-right", 7.0),
+                        voice2_db: voice - 3.0,
+                        dry_db: crate::dsp::lin_to_db((1.0 - wet).max(1e-4)),
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Harmonizer".into());
+                b.report.approximated.push("Harmonizer: chord modes and per-voice gains".into());
+                b.gain(in_gain + out_gain, bypass, "Harmonizer gain");
+            }
+            "reverb" => {
+                let decay = num(p, "decay-time", 1.5).clamp(0.4, 15.0);
+                let damp = num(p, "hf-damp", 5000.0).clamp(2000.0, 20_000.0);
+                b.push(
+                    EffectConfig::Reverb(ReverbParams {
+                        room_size: ((decay / 0.4).ln() / (15.0f32 / 0.4).ln()).clamp(0.0, 1.0),
+                        damping: 1.0 - (damp - 2000.0) / 18_000.0,
+                        predelay_ms: num(p, "predelay", 0.0).clamp(0.0, 200.0),
+                        mix: crate::dsp::db_to_lin(num(p, "amount", -12.0)).clamp(0.0, 1.0),
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Reverb".into());
+                b.report.approximated.push("Reverb: Calf's room types and bass/treble cuts".into());
+                b.gain(in_gain + out_gain, bypass, "Reverb gain");
+            }
+            "crusher" => {
+                b.push(
+                    EffectConfig::Crusher(CrusherParams {
+                        bits: num(p, "bit-reduction", 4.0).clamp(1.0, 16.0),
+                        downsample: num(p, "sample-reduction", 1.0).clamp(1.0, 64.0),
+                        mix: 1.0,
+                        gain_db: in_gain + out_gain,
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Crusher".into());
+            }
+            "delay" => b.report.skipped.push("Delay (a stereo alignment delay, not an echo)".into()),
             _ => b.report.skipped.push(pretty),
         }
     }

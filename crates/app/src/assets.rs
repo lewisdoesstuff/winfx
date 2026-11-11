@@ -35,6 +35,12 @@ const ICONS: &[(&str, &str)] = &[
     ("winfx/bass.svg", icon!(r#"<path d="M2 12c2.5-6 5.5-6 8 0s5.5 6 8 0 2.5-3 4-3"/>"#)),
     // Convolver: an impulse and its decaying response.
     ("winfx/convolver.svg", icon!(r#"<path d="M4 20V4M4 20h16M8 20v-9M11 20v-6M14 20v-4M17 20v-2"/>"#)),
+    ("winfx/pitch.svg", icon!(r#"<path d="M4 17c3 0 3-10 6-10s3 10 6 10M17 4v6M14 7l3-3 3 3"/>"#)),
+    ("winfx/harmonizer.svg", icon!(r#"<path d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM19 16a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>"#)),
+    ("winfx/autotune.svg", icon!(r#"<path d="M3 15c2-6 4-6 6 0s4 6 6 0M15 9h6M15 5h6M15 13h6"/>"#)),
+    ("winfx/reverb.svg", icon!(r#"<path d="M4 20V4M8 18V8M12 16v-6M16 15v-4M20 14v-2"/>"#)),
+    ("winfx/delay.svg", icon!(r#"<path d="M3 12h2M7 9v6M12 10v4M17 11v2M21 12h0"/>"#)),
+    ("winfx/crusher.svg", icon!(r#"<path d="M3 16h3v-4h3V8h3v4h3v4h3v-6h3"/>"#)),
     ("winfx/plug.svg", icon!(r#"<path d="M9 3v5M15 3v5M7 8h10v4a5 5 0 0 1-10 0zM12 17v4"/>"#)),
     (
         "winfx/grip.svg",

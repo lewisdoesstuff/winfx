@@ -32,6 +32,25 @@ pub enum ParamKey {
     Drive,
     Floor,
     Mix,
+    Semitones,
+    Cents,
+    Window,
+    Voice1Semi,
+    Voice1Db,
+    Voice2Semi,
+    Voice2Db,
+    DryDb,
+    Key,
+    ScaleKind,
+    Room,
+    Damping,
+    Predelay,
+    Time,
+    Feedback,
+    HighCut,
+    LowCut,
+    Bits,
+    Downsample,
     BandFreq(usize),
     BandGain(usize),
     BandQ(usize),
@@ -58,6 +77,11 @@ pub enum Unit {
     /// 0 = split band, 1 = whole signal.
     DeessMode,
     Percent,
+    Semitones,
+    Note,
+    ScaleName,
+    Times,
+    Cents,
     None,
 }
 
@@ -164,6 +188,44 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             p(Mix, "Mix", Percent, 0.0, 1.0, 0.01, false),
             p(Gain, "Gain", Db, -24.0, 24.0, 0.1, false),
         ],
+        EffectConfig::Pitch(_) => vec![
+            p(ParamKey::Semitones, "Semitones", Unit::Semitones, -12.0, 12.0, 1.0, false),
+            p(ParamKey::Cents, "Fine", Unit::Cents, -100.0, 100.0, 1.0, false),
+            p(Mix, "Mix", Percent, 0.0, 1.0, 0.01, false),
+            p(Window, "Grain", Ms, 20.0, 80.0, 1.0, false),
+        ],
+        EffectConfig::Harmonizer(_) => vec![
+            p(Voice1Semi, "Voice 1", Unit::Semitones, -12.0, 12.0, 1.0, false),
+            p(Voice1Db, "Voice 1 level", Db, -40.0, 6.0, 0.5, false),
+            p(Voice2Semi, "Voice 2", Unit::Semitones, -12.0, 12.0, 1.0, false),
+            p(Voice2Db, "Voice 2 level", Db, -40.0, 6.0, 0.5, false),
+            p(DryDb, "Your voice", Db, -40.0, 6.0, 0.5, false),
+        ],
+        EffectConfig::Autotune(_) => vec![
+            p(Key, "Key", Note, 0.0, 11.0, 1.0, false),
+            p(ScaleKind, "Scale", ScaleName, 0.0, 2.0, 1.0, false),
+            p(Speed, "Retune speed", Ms, 0.0, 200.0, 1.0, false),
+            p(Mix, "Amount", Percent, 0.0, 1.0, 0.01, false),
+        ],
+        EffectConfig::Reverb(_) => vec![
+            p(Room, "Room size", Percent, 0.0, 1.0, 0.01, false),
+            p(Damping, "Damping", Percent, 0.0, 1.0, 0.01, false),
+            p(Predelay, "Pre-delay", Ms, 0.0, 200.0, 1.0, false),
+            p(Mix, "Amount", Percent, 0.0, 1.0, 0.01, false),
+        ],
+        EffectConfig::Delay(_) => vec![
+            p(Time, "Time", Ms, 10.0, 2000.0, 1.0, true),
+            p(Feedback, "Feedback", Percent, 0.0, 0.95, 0.01, false),
+            p(Mix, "Amount", Percent, 0.0, 1.0, 0.01, false),
+            p(HighCut, "High cut", Hz, 1000.0, 20_000.0, 10.0, true),
+            p(LowCut, "Low cut", Hz, 20.0, 1000.0, 1.0, true),
+        ],
+        EffectConfig::Crusher(_) => vec![
+            p(Bits, "Bits", None, 1.0, 16.0, 0.1, false),
+            p(Downsample, "Downsample", Times, 1.0, 64.0, 1.0, false),
+            p(Mix, "Mix", Percent, 0.0, 1.0, 0.01, false),
+            p(Gain, "Gain", Db, -24.0, 12.0, 0.1, false),
+        ],
         EffectConfig::Maximizer(_) => vec![
             p(Threshold, "Threshold", Db, -24.0, 0.0, 0.1, false),
             p(Ceiling, "Ceiling", Db, -6.0, 0.0, 0.1, false),
@@ -260,6 +322,36 @@ pub fn get(cfg: &EffectConfig, key: ParamKey) -> f32 {
         (EffectConfig::BassEnhancer(b), Floor) => b.floor_hz,
         (EffectConfig::Convolver(c), Mix) => c.mix,
         (EffectConfig::Convolver(c), Gain) => c.gain_db,
+        (EffectConfig::Pitch(x), Semitones) => x.semitones,
+        (EffectConfig::Pitch(x), Cents) => x.cents,
+        (EffectConfig::Pitch(x), Mix) => x.mix,
+        (EffectConfig::Pitch(x), Window) => x.window_ms,
+        (EffectConfig::Harmonizer(x), Voice1Semi) => x.voice1_semitones,
+        (EffectConfig::Harmonizer(x), Voice1Db) => x.voice1_db,
+        (EffectConfig::Harmonizer(x), Voice2Semi) => x.voice2_semitones,
+        (EffectConfig::Harmonizer(x), Voice2Db) => x.voice2_db,
+        (EffectConfig::Harmonizer(x), DryDb) => x.dry_db,
+        (EffectConfig::Autotune(x), Key) => x.key as f32,
+        (EffectConfig::Autotune(x), ScaleKind) => match x.scale {
+            engine::dsp::Scale::Chromatic => 0.0,
+            engine::dsp::Scale::Major => 1.0,
+            engine::dsp::Scale::Minor => 2.0,
+        },
+        (EffectConfig::Autotune(x), Speed) => x.speed_ms,
+        (EffectConfig::Autotune(x), Mix) => x.mix,
+        (EffectConfig::Reverb(x), Room) => x.room_size,
+        (EffectConfig::Reverb(x), Damping) => x.damping,
+        (EffectConfig::Reverb(x), Predelay) => x.predelay_ms,
+        (EffectConfig::Reverb(x), Mix) => x.mix,
+        (EffectConfig::Delay(x), Time) => x.time_ms,
+        (EffectConfig::Delay(x), Feedback) => x.feedback,
+        (EffectConfig::Delay(x), Mix) => x.mix,
+        (EffectConfig::Delay(x), HighCut) => x.high_cut_hz,
+        (EffectConfig::Delay(x), LowCut) => x.low_cut_hz,
+        (EffectConfig::Crusher(x), Bits) => x.bits,
+        (EffectConfig::Crusher(x), Downsample) => x.downsample,
+        (EffectConfig::Crusher(x), Mix) => x.mix,
+        (EffectConfig::Crusher(x), Gain) => x.gain_db,
         (EffectConfig::Maximizer(m), Threshold) => m.threshold_db,
         (EffectConfig::Maximizer(m), Ceiling) => m.ceiling_db,
         (EffectConfig::Maximizer(m), Release) => m.release_ms,
@@ -325,6 +417,38 @@ pub fn set(cfg: &mut EffectConfig, key: ParamKey, v: f32) {
         (EffectConfig::BassEnhancer(b), Floor) => b.floor_hz = v,
         (EffectConfig::Convolver(c), Mix) => c.mix = v,
         (EffectConfig::Convolver(c), Gain) => c.gain_db = v,
+        (EffectConfig::Pitch(x), Semitones) => x.semitones = v.round(),
+        (EffectConfig::Pitch(x), Cents) => x.cents = v,
+        (EffectConfig::Pitch(x), Mix) => x.mix = v,
+        (EffectConfig::Pitch(x), Window) => x.window_ms = v,
+        (EffectConfig::Harmonizer(x), Voice1Semi) => x.voice1_semitones = v.round(),
+        (EffectConfig::Harmonizer(x), Voice1Db) => x.voice1_db = v,
+        (EffectConfig::Harmonizer(x), Voice2Semi) => x.voice2_semitones = v.round(),
+        (EffectConfig::Harmonizer(x), Voice2Db) => x.voice2_db = v,
+        (EffectConfig::Harmonizer(x), DryDb) => x.dry_db = v,
+        (EffectConfig::Autotune(x), Key) => x.key = v.round().clamp(0.0, 11.0) as u8,
+        (EffectConfig::Autotune(x), ScaleKind) => {
+            x.scale = match v.round() as i32 {
+                1 => engine::dsp::Scale::Major,
+                2 => engine::dsp::Scale::Minor,
+                _ => engine::dsp::Scale::Chromatic,
+            }
+        }
+        (EffectConfig::Autotune(x), Speed) => x.speed_ms = v,
+        (EffectConfig::Autotune(x), Mix) => x.mix = v,
+        (EffectConfig::Reverb(x), Room) => x.room_size = v,
+        (EffectConfig::Reverb(x), Damping) => x.damping = v,
+        (EffectConfig::Reverb(x), Predelay) => x.predelay_ms = v,
+        (EffectConfig::Reverb(x), Mix) => x.mix = v,
+        (EffectConfig::Delay(x), Time) => x.time_ms = v,
+        (EffectConfig::Delay(x), Feedback) => x.feedback = v,
+        (EffectConfig::Delay(x), Mix) => x.mix = v,
+        (EffectConfig::Delay(x), HighCut) => x.high_cut_hz = v,
+        (EffectConfig::Delay(x), LowCut) => x.low_cut_hz = v,
+        (EffectConfig::Crusher(x), Bits) => x.bits = v,
+        (EffectConfig::Crusher(x), Downsample) => x.downsample = v.round(),
+        (EffectConfig::Crusher(x), Mix) => x.mix = v,
+        (EffectConfig::Crusher(x), Gain) => x.gain_db = v,
         (EffectConfig::Maximizer(m), Threshold) => m.threshold_db = v,
         (EffectConfig::Maximizer(m), Ceiling) => m.ceiling_db = v,
         (EffectConfig::Maximizer(m), Release) => m.release_ms = v,
@@ -346,6 +470,18 @@ pub fn format(unit: Unit, v: f32) -> String {
         Unit::Seconds => format!("{v:.1} s"),
         Unit::DeessMode => if v >= 0.5 { "Whole signal".into() } else { "Highs only".into() },
         Unit::Percent => format!("{:.0} %", v * 100.0),
+        Unit::Semitones => {
+            let s = v.round() as i32;
+            match s {
+                0 => "0 st".into(),
+                12 | -12 => format!("{} octave", if s > 0 { "+1" } else { "−1" }),
+                _ => format!("{s:+} st").replace('-', "−"),
+            }
+        }
+        Unit::Note => NOTE_NAMES[(v.round() as usize).min(11)].into(),
+        Unit::ScaleName => ["Chromatic", "Major", "Minor"][(v.round() as usize).min(2)].into(),
+        Unit::Times => format!("{v:.0}×"),
+        Unit::Cents => format!("{v:+.0} ¢").replace('-', "−"),
         Unit::None => format!("{v:.2}"),
     }
 }
@@ -396,6 +532,12 @@ pub fn new_effect(kind: &str) -> Option<EffectConfig> {
         "Maximizer" => EffectConfig::Maximizer(MaximizerParams::default()),
         "Exciter" => EffectConfig::Exciter(ExciterParams::default()),
         "Bass enhancer" => EffectConfig::BassEnhancer(BassEnhancerParams::default()),
+        "Pitch shift" => EffectConfig::Pitch(PitchParams::default()),
+        "Harmonizer" => EffectConfig::Harmonizer(HarmonizerParams::default()),
+        "Autotune" => EffectConfig::Autotune(AutotuneParams::default()),
+        "Reverb" => EffectConfig::Reverb(ReverbParams::default()),
+        "Delay" => EffectConfig::Delay(DelayParams::default()),
+        "Crusher" => EffectConfig::Crusher(CrusherParams::default()),
         "Convolver" => EffectConfig::Convolver(ConvolverParams { ir_path: String::new(), mix: 1.0, gain_db: 0.0 }),
         _ => return None,
     })
@@ -416,7 +558,24 @@ pub const ADDABLE: &[&str] = &[
     "Gain",
     "Maximizer",
     "Limiter",
+    "Pitch shift",
+    "Harmonizer",
+    "Autotune",
+    "Reverb",
+    "Delay",
+    "Crusher",
 ];
+
+/// "A3"-style name of the nearest note to `hz`.
+pub fn note_name(hz: f32) -> String {
+    if hz <= 0.0 {
+        return "—".into();
+    }
+    let midi = (69.0 + 12.0 * (hz / 440.0).log2()).round() as i32;
+    format!("{}{}", NOTE_NAMES[midi.rem_euclid(12) as usize], midi / 12 - 1)
+}
+
+pub const NOTE_NAMES: [&str; 12] = ["C", "C♯", "D", "D♯", "E", "F", "F♯", "G", "G♯", "A", "A♯", "B"];
 
 /// One-line card summary, e.g. "−28 dB · 3:1 · 5 / 120 ms".
 pub fn summary(cfg: &EffectConfig) -> String {
@@ -447,6 +606,21 @@ pub fn summary(cfg: &EffectConfig) -> String {
         EffectConfig::Expander(e) => format!("{} · {:.1}:1 · up to {:.0} dB", db(e.threshold_db), e.ratio, e.range_db),
         EffectConfig::Autogain(a) => format!("Target {} · ±{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db)),
         EffectConfig::Maximizer(m) => format!("+{:.1} dB into {}", -m.threshold_db, db(m.ceiling_db)),
+        EffectConfig::Pitch(x) => format!("{} · ~{:.0} ms delay", format(Unit::Semitones, x.semitones), x.window_ms / 2.0),
+        EffectConfig::Harmonizer(x) => format!(
+            "{} and {} voices",
+            format(Unit::Semitones, x.voice1_semitones),
+            format(Unit::Semitones, x.voice2_semitones)
+        ),
+        EffectConfig::Autotune(x) => format!(
+            "{} {} · {:.0} ms retune",
+            NOTE_NAMES[(x.key as usize).min(11)],
+            ["chromatic", "major", "minor"][x.scale as usize],
+            x.speed_ms
+        ),
+        EffectConfig::Reverb(x) => format!("{:.0} % room · {:.0} % wet", x.room_size * 100.0, x.mix * 100.0),
+        EffectConfig::Delay(x) => format!("{:.0} ms · {:.0} % feedback", x.time_ms, x.feedback * 100.0),
+        EffectConfig::Crusher(x) => format!("{:.1} bits · {:.0}× downsample", x.bits, x.downsample),
         EffectConfig::Exciter(e) => format!("{} from {}", db(e.amount_db), format(Unit::Hz, e.freq_hz)),
         EffectConfig::BassEnhancer(b) => format!("{} below {}", db(b.amount_db), format(Unit::Hz, b.freq_hz)),
         EffectConfig::Convolver(c) => match std::path::Path::new(&c.ir_path).file_name() {
@@ -478,5 +652,11 @@ pub fn icon(cfg: &EffectConfig) -> &'static str {
         EffectConfig::Exciter(_) => "winfx/exciter.svg",
         EffectConfig::BassEnhancer(_) => "winfx/bass.svg",
         EffectConfig::Convolver(_) => "winfx/convolver.svg",
+        EffectConfig::Pitch(_) => "winfx/pitch.svg",
+        EffectConfig::Harmonizer(_) => "winfx/harmonizer.svg",
+        EffectConfig::Autotune(_) => "winfx/autotune.svg",
+        EffectConfig::Reverb(_) => "winfx/reverb.svg",
+        EffectConfig::Delay(_) => "winfx/delay.svg",
+        EffectConfig::Crusher(_) => "winfx/crusher.svg",
     }
 }

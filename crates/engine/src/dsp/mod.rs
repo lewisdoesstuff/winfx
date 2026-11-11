@@ -12,6 +12,8 @@ pub mod gain;
 pub mod gate;
 pub mod limiter;
 pub mod maximizer;
+pub mod pitch;
+pub mod space;
 
 pub use autogain::{Autogain, AutogainParams};
 pub use biquad::{Biquad, Coeffs, FilterKind};
@@ -24,6 +26,8 @@ pub use gain::{Gain, GainParams};
 pub use gate::{Gate, GateParams};
 pub use limiter::{Limiter, LimiterParams};
 pub use maximizer::{Maximizer, MaximizerParams};
+pub use pitch::{Autotune, AutotuneParams, Harmonizer, HarmonizerParams, PitchParams, PitchShift, Scale};
+pub use space::{Crusher, CrusherParams, Delay, DelayParams, Reverb, ReverbParams};
 
 #[inline]
 pub fn db_to_lin(db: f32) -> f32 {

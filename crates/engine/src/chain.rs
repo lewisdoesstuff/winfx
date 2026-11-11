@@ -9,7 +9,8 @@ use crate::dsp::{
     Autogain, AutogainParams, BassEnhancer, BassEnhancerParams, Biquad, Coeffs, Compressor,
     CompressorParams, Convolver, ConvolverParams, Deesser, DeesserParams, Exciter, ExciterParams,
     Expander, ExpanderParams, FilterKind, Gain, GainParams, Gate, GateParams, Limiter, LimiterParams,
-    Maximizer, MaximizerParams, time_coeff,
+    Maximizer, MaximizerParams, time_coeff, Autotune, AutotuneParams, Crusher, CrusherParams, Delay,
+    DelayParams, Harmonizer, HarmonizerParams, PitchParams, PitchShift, Reverb, ReverbParams,
 };
 use crate::meters::{block_levels, Meters, MAX_SLOTS};
 use serde::{Deserialize, Serialize};
@@ -109,6 +110,12 @@ pub enum EffectConfig {
     Exciter(ExciterParams),
     BassEnhancer(BassEnhancerParams),
     Convolver(ConvolverParams),
+    Pitch(PitchParams),
+    Harmonizer(HarmonizerParams),
+    Autotune(AutotuneParams),
+    Reverb(ReverbParams),
+    Delay(DelayParams),
+    Crusher(CrusherParams),
 }
 
 impl EffectConfig {
@@ -127,6 +134,12 @@ impl EffectConfig {
             EffectConfig::Exciter(_) => "Exciter",
             EffectConfig::BassEnhancer(_) => "Bass enhancer",
             EffectConfig::Convolver(_) => "Convolver",
+            EffectConfig::Pitch(_) => "Pitch shift",
+            EffectConfig::Harmonizer(_) => "Harmonizer",
+            EffectConfig::Autotune(_) => "Autotune",
+            EffectConfig::Reverb(_) => "Reverb",
+            EffectConfig::Delay(_) => "Delay",
+            EffectConfig::Crusher(_) => "Crusher",
         }
     }
 
@@ -231,6 +244,12 @@ enum Proc {
     Exciter(Exciter),
     BassEnhancer(BassEnhancer),
     Convolver(Box<Convolver>),
+    Pitch(Box<PitchShift>),
+    Harmonizer(Box<Harmonizer>),
+    Autotune(Box<Autotune>),
+    Reverb(Box<Reverb>),
+    Delay(Box<Delay>),
+    Crusher(Crusher),
 }
 
 impl Proc {
@@ -255,6 +274,12 @@ impl Proc {
             EffectConfig::Exciter(p) => Proc::Exciter(Exciter::new(p, sr)),
             EffectConfig::BassEnhancer(p) => Proc::BassEnhancer(BassEnhancer::new(p, sr)),
             EffectConfig::Convolver(p) => Proc::Convolver(Box::new(Convolver::new(p, sr))),
+            EffectConfig::Pitch(p) => Proc::Pitch(Box::new(PitchShift::new(p, sr))),
+            EffectConfig::Harmonizer(p) => Proc::Harmonizer(Box::new(Harmonizer::new(p, sr))),
+            EffectConfig::Autotune(p) => Proc::Autotune(Box::new(Autotune::new(p, sr))),
+            EffectConfig::Reverb(p) => Proc::Reverb(Box::new(Reverb::new(p, sr))),
+            EffectConfig::Delay(p) => Proc::Delay(Box::new(Delay::new(p, sr))),
+            EffectConfig::Crusher(p) => Proc::Crusher(Crusher::new(p, sr)),
         }
     }
 
@@ -272,7 +297,13 @@ impl Proc {
             | (Proc::Autogain(_), EffectConfig::Autogain(_))
             | (Proc::Maximizer(_), EffectConfig::Maximizer(_))
             | (Proc::Exciter(_), EffectConfig::Exciter(_))
-            | (Proc::BassEnhancer(_), EffectConfig::BassEnhancer(_)) => true,
+            | (Proc::BassEnhancer(_), EffectConfig::BassEnhancer(_))
+            | (Proc::Pitch(_), EffectConfig::Pitch(_))
+            | (Proc::Harmonizer(_), EffectConfig::Harmonizer(_))
+            | (Proc::Autotune(_), EffectConfig::Autotune(_))
+            | (Proc::Reverb(_), EffectConfig::Reverb(_))
+            | (Proc::Delay(_), EffectConfig::Delay(_))
+            | (Proc::Crusher(_), EffectConfig::Crusher(_)) => true,
             // Decided in `can_adopt` by comparing the loaded kernels.
             (Proc::Convolver(_), EffectConfig::Convolver(_)) => false,
             _ => false,
@@ -306,6 +337,12 @@ impl Proc {
             (Proc::Exciter(e), EffectConfig::Exciter(p)) => e.set_params(p, sr),
             (Proc::BassEnhancer(b), EffectConfig::BassEnhancer(p)) => b.set_params(p, sr),
             (Proc::Convolver(c), EffectConfig::Convolver(p)) => c.set_params(p, sr),
+            (Proc::Pitch(x), EffectConfig::Pitch(p)) => x.set_params(p, sr),
+            (Proc::Harmonizer(x), EffectConfig::Harmonizer(p)) => x.set_params(p, sr),
+            (Proc::Autotune(x), EffectConfig::Autotune(p)) => x.set_params(p, sr),
+            (Proc::Reverb(x), EffectConfig::Reverb(p)) => x.set_params(p, sr),
+            (Proc::Delay(x), EffectConfig::Delay(p)) => x.set_params(p, sr),
+            (Proc::Crusher(x), EffectConfig::Crusher(p)) => x.set_params(p, sr),
             _ => {}
         }
     }
@@ -326,6 +363,12 @@ impl Proc {
             Proc::Exciter(e) => e.process(x),
             Proc::BassEnhancer(b) => b.process(x),
             Proc::Convolver(c) => c.process(x),
+            Proc::Pitch(p) => p.process(x),
+            Proc::Harmonizer(h) => h.process(x),
+            Proc::Autotune(a) => a.process(x),
+            Proc::Reverb(r) => r.process(x),
+            Proc::Delay(d) => d.process(x),
+            Proc::Crusher(c) => c.process(x),
         }
     }
 
@@ -425,6 +468,7 @@ impl Chain {
                 match &slot.proc {
                     Proc::Gate(g) => meters.det[i].raise(g.detector_level()),
                     Proc::Autogain(a) => meters.aux[i].store(if slot.bypass { 0.0 } else { a.gain_db() }),
+                    Proc::Autotune(a) => meters.aux[i].store(if slot.bypass { 0.0 } else { a.detected_hz }),
                     _ => {}
                 }
             }

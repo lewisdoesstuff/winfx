@@ -1972,6 +1972,18 @@ impl MainView {
                         cx.notify();
                     })),
             )
+            .when(matches!(slot.effect, EffectConfig::Autotune(_)) && on, |d| {
+                let hz = self.levels.aux.get(ix).copied().unwrap_or(0.0);
+                d.child(
+                    div()
+                        .w(px(132.))
+                        .flex_none()
+                        .text_xs()
+                        .text_right()
+                        .text_color(p.text2)
+                        .child(if hz > 0.0 { format!("hearing {}", params::note_name(hz)) } else { "listening…".into() }),
+                )
+            })
             .when(matches!(slot.effect, EffectConfig::Autogain(_)) && on, |d| {
                 let g = self.levels.aux.get(ix).copied().unwrap_or(0.0);
                 d.child(
