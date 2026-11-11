@@ -1,7 +1,7 @@
 //! Compare presets on a recording:
 //!   cargo run -p engine --example analyze -- <recording.wav> [raw|current|<preset.json>]...
-//! "current" = the chain in %APPDATA%\winfx\config.json. Writes each processed
-//! version next to the recording as "<name> - <preset>.wav".
+//! "current" = the chain in %APPDATA%\winfx\config.json. With --write, saves each
+//! processed version next to the recording as "<name> - <preset>.wav".
 
 use engine::analysis::{analyze, gr_split, render, speech_windows};
 use engine::import::{import, Imported};
@@ -33,7 +33,9 @@ fn load_chain(arg: &str) -> Result<(String, ChainConfig), String> {
 }
 
 fn main() {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let write = args.iter().any(|a| a == "--write");
+    args.retain(|a| a != "--write");
     let Some(rec) = args.first() else {
         eprintln!("usage: analyze <recording.wav> [raw|current|preset.json]...");
         std::process::exit(2);
@@ -57,7 +59,7 @@ fn main() {
             Path::new(rec).file_stem().unwrap().to_string_lossy(),
             name
         ));
-        if name != "raw" {
+        if write && name != "raw" {
             let _ = engine::wav::write_mono(&out_path, &r.output, SAMPLE_RATE);
         }
         reports.push((name, analyze(&r.output, &speech), r.gr));
@@ -78,6 +80,7 @@ fn main() {
     };
     row("Loudness (LUFS)", &|r| format!("{:.1}", r.lufs));
     row("Peak (dBFS)", &|r| format!("{:.1}", r.peak_db));
+    row("Loudness range (LU)", &|r| format!("{:.1}", r.lra));
     row("Speech level (dBFS)", &|r| format!("{:.1}", r.speech_db));
     row("Noise floor (dBFS)", &|r| format!("{:.1}", r.noise_db));
     row("Speech − noise (dB)", &|r| format!("{:.1}", r.speech_db - r.noise_db));

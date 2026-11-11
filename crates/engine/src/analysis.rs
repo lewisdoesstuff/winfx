@@ -60,6 +60,8 @@ pub struct Report {
     pub sibilance_p95_db: f32,
     /// Share of the recording that is speech (window above noise + 12 dB).
     pub speech_share: f32,
+    /// EBU R128 loudness range: spread of 3 s short-term loudness (LU).
+    pub lra: f32,
 }
 
 /// Indices of 50 ms windows that are speech, judged on `reference` (the raw input).
@@ -83,6 +85,30 @@ fn percentile(v: &[f32], q: f32) -> f32 {
     let mut s = v.to_vec();
     s.sort_by(f32::total_cmp);
     s[((s.len() - 1) as f32 * q).round() as usize]
+}
+
+/// EBU Tech 3342 loudness range: 10th–95th percentile of gated 3 s short-term loudness.
+pub fn loudness_range(x: &[f32]) -> f32 {
+    let sr = SAMPLE_RATE as f32;
+    let mut shelf = Biquad::new(Coeffs::design(FilterKind::HighShelf, 1681.97, std::f32::consts::FRAC_1_SQRT_2, 4.0, sr));
+    let mut hpf = Biquad::new(Coeffs::design(FilterKind::HighPass, 38.13, 0.5003, 0.0, sr));
+    let k: Vec<f32> = x.iter().map(|&s| hpf.process(shelf.process(s))).collect();
+    let (block, hop) = ((3.0 * sr) as usize, (0.1 * sr) as usize);
+    let mut st = vec![];
+    let mut i = 0;
+    while i + block <= k.len() {
+        let ms = k[i..i + block].iter().map(|v| (v * v) as f64).sum::<f64>() / block as f64;
+        st.push((-0.691 + 10.0 * ms.max(1e-20).log10()) as f32);
+        i += hop;
+    }
+    let abs: Vec<f32> = st.into_iter().filter(|l| *l > -70.0).collect();
+    if abs.len() < 2 {
+        return 0.0;
+    }
+    let mean_ms = abs.iter().map(|l| 10f64.powf((*l as f64 + 0.691) / 10.0)).sum::<f64>() / abs.len() as f64;
+    let gate = (-0.691 + 10.0 * mean_ms.log10()) as f32 - 20.0;
+    let rel: Vec<f32> = abs.into_iter().filter(|l| *l > gate).collect();
+    percentile(&rel, 0.95) - percentile(&rel, 0.10)
 }
 
 /// BS.1770 integrated loudness with absolute (−70) and relative (−10 LU) gates.
@@ -166,6 +192,7 @@ pub fn analyze(x: &[f32], speech: &[bool]) -> Report {
         sibilance_db: if sib.is_empty() { -99.0 } else { sib.iter().sum::<f32>() / sib.len() as f32 },
         sibilance_p95_db: percentile(&sib, 0.95),
         speech_share,
+        lra: loudness_range(x),
     }
 }
 
