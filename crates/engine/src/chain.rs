@@ -6,8 +6,9 @@
 //! back to be dropped off the audio thread.
 
 use crate::dsp::{
-    Biquad, Coeffs, Compressor, CompressorParams, FilterKind, Gain, GainParams, Gate, GateParams,
-    Limiter, LimiterParams, time_coeff,
+    Autogain, AutogainParams, Biquad, Coeffs, Compressor, CompressorParams, Deesser, DeesserParams,
+    Expander, ExpanderParams, FilterKind, Gain, GainParams, Gate, GateParams, Limiter, LimiterParams,
+    Maximizer, MaximizerParams, time_coeff,
 };
 use crate::meters::{block_levels, Meters, MAX_SLOTS};
 use serde::{Deserialize, Serialize};
@@ -100,6 +101,10 @@ pub enum EffectConfig {
     Compressor(CompressorParams),
     Gain(GainParams),
     Limiter(LimiterParams),
+    Deesser(DeesserParams),
+    Expander(ExpanderParams),
+    Autogain(AutogainParams),
+    Maximizer(MaximizerParams),
 }
 
 impl EffectConfig {
@@ -111,6 +116,10 @@ impl EffectConfig {
             EffectConfig::Compressor(_) => "Compressor",
             EffectConfig::Gain(_) => "Gain",
             EffectConfig::Limiter(_) => "Limiter",
+            EffectConfig::Deesser(_) => "De-esser",
+            EffectConfig::Expander(_) => "Expander",
+            EffectConfig::Autogain(_) => "Auto-gain",
+            EffectConfig::Maximizer(_) => "Maximizer",
         }
     }
 
@@ -179,6 +188,7 @@ impl ChainConfig {
             .iter()
             .filter(|s| !s.bypass)
             .map(|s| match &s.effect {
+                EffectConfig::Maximizer(_) => Maximizer::latency_ms(),
                 EffectConfig::Limiter(l) => {
                     let frames = (l.lookahead_ms.clamp(0.1, 20.0) * 0.001 * crate::SAMPLE_RATE as f32).round().max(1.0);
                     frames * 1000.0 / crate::SAMPLE_RATE as f32
@@ -207,6 +217,10 @@ enum Proc {
     Compressor(Compressor),
     Gain(Gain),
     Limiter(Limiter),
+    Deesser(Deesser),
+    Expander(Expander),
+    Autogain(Autogain),
+    Maximizer(Maximizer),
 }
 
 impl Proc {
@@ -224,6 +238,10 @@ impl Proc {
             EffectConfig::Compressor(p) => Proc::Compressor(Compressor::new(p, sr)),
             EffectConfig::Gain(p) => Proc::Gain(Gain::new(p, sr)),
             EffectConfig::Limiter(p) => Proc::Limiter(Limiter::new(p, sr)),
+            EffectConfig::Deesser(p) => Proc::Deesser(Deesser::new(p, sr)),
+            EffectConfig::Expander(p) => Proc::Expander(Expander::new(p, sr)),
+            EffectConfig::Autogain(p) => Proc::Autogain(Autogain::new(p, sr)),
+            EffectConfig::Maximizer(p) => Proc::Maximizer(Maximizer::new(p, sr)),
         }
     }
 
@@ -236,6 +254,10 @@ impl Proc {
             | (Proc::Gain(_), EffectConfig::Gain(_)) => true,
             (Proc::Eq(f, _), EffectConfig::Eq(p)) => f.len() == p.total_stages(),
             (Proc::Limiter(l), EffectConfig::Limiter(p)) => l.compatible(p, sr),
+            (Proc::Deesser(_), EffectConfig::Deesser(_))
+            | (Proc::Expander(_), EffectConfig::Expander(_))
+            | (Proc::Autogain(_), EffectConfig::Autogain(_))
+            | (Proc::Maximizer(_), EffectConfig::Maximizer(_)) => true,
             _ => false,
         }
     }
@@ -260,6 +282,10 @@ impl Proc {
             (Proc::Compressor(c), EffectConfig::Compressor(p)) => c.set_params(p, sr),
             (Proc::Gain(g), EffectConfig::Gain(p)) => g.set_params(p, sr),
             (Proc::Limiter(l), EffectConfig::Limiter(p)) => l.set_params(p, sr),
+            (Proc::Deesser(d), EffectConfig::Deesser(p)) => d.set_params(p, sr),
+            (Proc::Expander(e), EffectConfig::Expander(p)) => e.set_params(p, sr),
+            (Proc::Autogain(a), EffectConfig::Autogain(p)) => a.set_params(p, sr),
+            (Proc::Maximizer(m), EffectConfig::Maximizer(p)) => m.set_params(p, sr),
             _ => {}
         }
     }
@@ -273,6 +299,10 @@ impl Proc {
             Proc::Compressor(c) => c.process(x),
             Proc::Gain(g) => g.process(x),
             Proc::Limiter(l) => l.process(x),
+            Proc::Deesser(d) => d.process(x),
+            Proc::Expander(e) => e.process(x),
+            Proc::Autogain(a) => a.process(x),
+            Proc::Maximizer(m) => m.process(x),
         }
     }
 
@@ -281,6 +311,9 @@ impl Proc {
             Proc::Gate(g) => g.reduction_db(),
             Proc::Compressor(c) => c.reduction_db(),
             Proc::Limiter(l) => l.reduction_db(),
+            Proc::Deesser(d) => d.reduction_db(),
+            Proc::Expander(e) => e.reduction_db(),
+            Proc::Maximizer(m) => m.reduction_db(),
             _ => 0.0,
         }
     }
@@ -362,8 +395,10 @@ impl Chain {
             if i < MAX_SLOTS {
                 let gr = if slot.bypass { 0.0 } else { slot.proc.reduction_db() };
                 meters.gr[i].raise(gr);
-                if let Proc::Gate(g) = &slot.proc {
-                    meters.det[i].raise(g.detector_level());
+                match &slot.proc {
+                    Proc::Gate(g) => meters.det[i].raise(g.detector_level()),
+                    Proc::Autogain(a) => meters.aux[i].store(if slot.bypass { 0.0 } else { a.gain_db() }),
+                    _ => {}
                 }
             }
         }

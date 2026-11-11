@@ -117,12 +117,14 @@ struct Levels {
     out_peak: f32,
     out_rms: f32,
     gr: [f32; MAX_SLOTS],
+    /// Signed live values (auto-gain's gain).
+    aux: [f32; MAX_SLOTS],
     last: Instant,
 }
 
 impl Default for Levels {
     fn default() -> Self {
-        Levels { in_peak: -90.0, in_rms: -90.0, out_peak: -90.0, out_rms: -90.0, gr: [0.0; MAX_SLOTS], last: Instant::now() }
+        Levels { in_peak: -90.0, in_rms: -90.0, out_peak: -90.0, out_rms: -90.0, gr: [0.0; MAX_SLOTS], aux: [0.0; MAX_SLOTS], last: Instant::now() }
     }
 }
 
@@ -647,6 +649,9 @@ impl MainView {
         let smooth = |old: f32, new: f32| if new > old { new } else { old + (new - old) * (dt * 8.0).min(1.0) };
         l.in_rms = smooth(l.in_rms, db(meters.in_rms.take()));
         l.out_rms = smooth(l.out_rms, db(meters.out_rms.take()));
+        for (i, a) in l.aux.iter_mut().enumerate() {
+            *a = meters.aux[i].load();
+        }
         for (i, gr) in l.gr.iter_mut().enumerate() {
             let v = meters.gr[i].take();
             *gr = if v > *gr { v } else { *gr + (v - *gr) * (dt * 6.0).min(1.0) };
@@ -1910,6 +1915,18 @@ impl MainView {
                         cx.notify();
                     })),
             )
+            .when(matches!(slot.effect, EffectConfig::Autogain(_)) && on, |d| {
+                let g = self.levels.aux.get(ix).copied().unwrap_or(0.0);
+                d.child(
+                    div()
+                        .w(px(132.))
+                        .flex_none()
+                        .text_xs()
+                        .text_right()
+                        .text_color(p.text2)
+                        .child(format!("now {}", params::format(params::Unit::Db, g))),
+                )
+            })
             .when(params::has_gr(&slot.effect) && on, |d| {
                 d.child(
                     div()

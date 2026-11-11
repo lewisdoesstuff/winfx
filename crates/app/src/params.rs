@@ -21,6 +21,13 @@ pub enum ParamKey {
     Gain,
     Ceiling,
     Lookahead,
+    /// De-esser split/wide.
+    Mode,
+    Target,
+    Silence,
+    MaxBoost,
+    MaxCut,
+    Speed,
     BandFreq(usize),
     BandGain(usize),
     BandQ(usize),
@@ -41,6 +48,11 @@ pub enum Unit {
     Ratio,
     /// Cascaded stages, shown as dB/oct.
     Slope,
+    /// Loudness, LUFS.
+    Lufs,
+    Seconds,
+    /// 0 = split band, 1 = whole signal.
+    DeessMode,
     None,
 }
 
@@ -108,6 +120,34 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             p(Release, "Release", Ms, 5.0, 500.0, 1.0, false),
             p(Lookahead, "Lookahead", Ms, 0.5, 10.0, 0.1, false),
         ],
+        EffectConfig::Deesser(_) => vec![
+            p(Freq, "Frequency", Hz, 2000.0, 16_000.0, 10.0, true),
+            p(Threshold, "Threshold", Db, -60.0, 0.0, 0.5, false),
+            p(ParamKey::Ratio, "Ratio", Unit::Ratio, 1.0, 20.0, 0.1, false),
+            p(Range, "Range", DbAmount, 0.0, 24.0, 0.5, false),
+            p(Release, "Release", Ms, 5.0, 300.0, 1.0, false),
+            p(Mode, "Mode", DeessMode, 0.0, 1.0, 1.0, false),
+        ],
+        EffectConfig::Expander(_) => vec![
+            p(Threshold, "Threshold", Db, -80.0, 0.0, 0.5, false),
+            p(ParamKey::Ratio, "Ratio", Unit::Ratio, 1.0, 10.0, 0.1, false),
+            p(Range, "Range", DbAmount, 0.0, 60.0, 0.5, false),
+            p(Attack, "Attack", Ms, 0.1, 100.0, 0.1, false),
+            p(Release, "Release", Ms, 5.0, 1000.0, 1.0, false),
+            p(Knee, "Knee", DbAmount, 0.0, 24.0, 0.5, false),
+        ],
+        EffectConfig::Autogain(_) => vec![
+            p(Target, "Target", Lufs, -36.0, -6.0, 0.5, false),
+            p(Silence, "Silence below", Lufs, -70.0, -20.0, 0.5, false),
+            p(MaxBoost, "Max boost", DbAmount, 0.0, 24.0, 0.5, false),
+            p(MaxCut, "Max cut", DbAmount, 0.0, 24.0, 0.5, false),
+            p(Speed, "Speed", Seconds, 0.2, 10.0, 0.1, false),
+        ],
+        EffectConfig::Maximizer(_) => vec![
+            p(Threshold, "Threshold", Db, -24.0, 0.0, 0.1, false),
+            p(Ceiling, "Ceiling", Db, -6.0, 0.0, 0.1, false),
+            p(Release, "Release", Ms, 5.0, 500.0, 1.0, false),
+        ],
     }
 }
 
@@ -172,6 +212,26 @@ pub fn get(cfg: &EffectConfig, key: ParamKey) -> f32 {
         (EffectConfig::Limiter(l), Ceiling) => l.ceiling_db,
         (EffectConfig::Limiter(l), Release) => l.release_ms,
         (EffectConfig::Limiter(l), Lookahead) => l.lookahead_ms,
+        (EffectConfig::Deesser(d), Freq) => d.freq_hz,
+        (EffectConfig::Deesser(d), Threshold) => d.threshold_db,
+        (EffectConfig::Deesser(d), Ratio) => d.ratio,
+        (EffectConfig::Deesser(d), Range) => d.range_db,
+        (EffectConfig::Deesser(d), Release) => d.release_ms,
+        (EffectConfig::Deesser(d), Mode) => (d.mode == engine::dsp::DeesserMode::Wide) as u8 as f32,
+        (EffectConfig::Expander(e), Threshold) => e.threshold_db,
+        (EffectConfig::Expander(e), Ratio) => e.ratio,
+        (EffectConfig::Expander(e), Range) => e.range_db,
+        (EffectConfig::Expander(e), Attack) => e.attack_ms,
+        (EffectConfig::Expander(e), Release) => e.release_ms,
+        (EffectConfig::Expander(e), Knee) => e.knee_db,
+        (EffectConfig::Autogain(a), Target) => a.target_lufs,
+        (EffectConfig::Autogain(a), Silence) => a.silence_lufs,
+        (EffectConfig::Autogain(a), MaxBoost) => a.max_boost_db,
+        (EffectConfig::Autogain(a), MaxCut) => a.max_cut_db,
+        (EffectConfig::Autogain(a), Speed) => a.speed_s,
+        (EffectConfig::Maximizer(m), Threshold) => m.threshold_db,
+        (EffectConfig::Maximizer(m), Ceiling) => m.ceiling_db,
+        (EffectConfig::Maximizer(m), Release) => m.release_ms,
         _ => 0.0,
     }
 }
@@ -205,6 +265,28 @@ pub fn set(cfg: &mut EffectConfig, key: ParamKey, v: f32) {
         (EffectConfig::Limiter(l), Ceiling) => l.ceiling_db = v,
         (EffectConfig::Limiter(l), Release) => l.release_ms = v,
         (EffectConfig::Limiter(l), Lookahead) => l.lookahead_ms = v,
+        (EffectConfig::Deesser(d), Freq) => d.freq_hz = v,
+        (EffectConfig::Deesser(d), Threshold) => d.threshold_db = v,
+        (EffectConfig::Deesser(d), Ratio) => d.ratio = v,
+        (EffectConfig::Deesser(d), Range) => d.range_db = v,
+        (EffectConfig::Deesser(d), Release) => d.release_ms = v,
+        (EffectConfig::Deesser(d), Mode) => {
+            d.mode = if v >= 0.5 { engine::dsp::DeesserMode::Wide } else { engine::dsp::DeesserMode::Split }
+        }
+        (EffectConfig::Expander(e), Threshold) => e.threshold_db = v,
+        (EffectConfig::Expander(e), Ratio) => e.ratio = v,
+        (EffectConfig::Expander(e), Range) => e.range_db = v,
+        (EffectConfig::Expander(e), Attack) => e.attack_ms = v,
+        (EffectConfig::Expander(e), Release) => e.release_ms = v,
+        (EffectConfig::Expander(e), Knee) => e.knee_db = v,
+        (EffectConfig::Autogain(a), Target) => a.target_lufs = v,
+        (EffectConfig::Autogain(a), Silence) => a.silence_lufs = v,
+        (EffectConfig::Autogain(a), MaxBoost) => a.max_boost_db = v,
+        (EffectConfig::Autogain(a), MaxCut) => a.max_cut_db = v,
+        (EffectConfig::Autogain(a), Speed) => a.speed_s = v,
+        (EffectConfig::Maximizer(m), Threshold) => m.threshold_db = v,
+        (EffectConfig::Maximizer(m), Ceiling) => m.ceiling_db = v,
+        (EffectConfig::Maximizer(m), Release) => m.release_ms = v,
         _ => {}
     }
 }
@@ -219,13 +301,24 @@ pub fn format(unit: Unit, v: f32) -> String {
         Unit::Ms => format!("{v:.0} ms"),
         Unit::Ratio => format!("{v:.1}:1"),
         Unit::Slope => format!("{} dB/oct", (v.round() as i32) * 12),
+        Unit::Lufs => format!("{v:.1} LUFS").replace('-', "−"),
+        Unit::Seconds => format!("{v:.1} s"),
+        Unit::DeessMode => if v >= 0.5 { "Whole signal".into() } else { "Highs only".into() },
         Unit::None => format!("{v:.2}"),
     }
 }
 
 /// Is this effect a dynamics processor (has a gain-reduction meter)?
 pub fn has_gr(cfg: &EffectConfig) -> bool {
-    matches!(cfg, EffectConfig::Gate(_) | EffectConfig::Compressor(_) | EffectConfig::Limiter(_))
+    matches!(
+        cfg,
+        EffectConfig::Gate(_)
+            | EffectConfig::Compressor(_)
+            | EffectConfig::Limiter(_)
+            | EffectConfig::Deesser(_)
+            | EffectConfig::Expander(_)
+            | EffectConfig::Maximizer(_)
+    )
 }
 
 pub fn title(cfg: &EffectConfig) -> String {
@@ -255,12 +348,27 @@ pub fn new_effect(kind: &str) -> Option<EffectConfig> {
         "Compressor" => EffectConfig::Compressor(CompressorParams::default()),
         "Gain" => EffectConfig::Gain(GainParams::default()),
         "Limiter" => EffectConfig::Limiter(LimiterParams::default()),
+        "De-esser" => EffectConfig::Deesser(DeesserParams::default()),
+        "Expander" => EffectConfig::Expander(ExpanderParams::default()),
+        "Auto-gain" => EffectConfig::Autogain(AutogainParams::default()),
+        "Maximizer" => EffectConfig::Maximizer(MaximizerParams::default()),
         _ => return None,
     })
 }
 
-pub const ADDABLE: &[&str] =
-    &["High-pass", "Low-pass", "Equalizer", "Gate", "Compressor", "Gain", "Limiter"];
+pub const ADDABLE: &[&str] = &[
+    "High-pass",
+    "Low-pass",
+    "Equalizer",
+    "Gate",
+    "Expander",
+    "Compressor",
+    "De-esser",
+    "Auto-gain",
+    "Gain",
+    "Maximizer",
+    "Limiter",
+];
 
 /// One-line card summary, e.g. "−28 dB · 3:1 · 5 / 120 ms".
 pub fn summary(cfg: &EffectConfig) -> String {
@@ -282,6 +390,15 @@ pub fn summary(cfg: &EffectConfig) -> String {
         ),
         EffectConfig::Gain(g) => format(Unit::Db, g.gain_db),
         EffectConfig::Limiter(l) => format!("Ceiling {} · {} ms look-ahead", db(l.ceiling_db), trim(l.lookahead_ms)),
+        EffectConfig::Deesser(d) => format!(
+            "Above {} · {} · {:.1}:1",
+            format(Unit::Hz, d.freq_hz),
+            db(d.threshold_db),
+            d.ratio
+        ),
+        EffectConfig::Expander(e) => format!("{} · {:.1}:1 · up to {:.0} dB", db(e.threshold_db), e.ratio, e.range_db),
+        EffectConfig::Autogain(a) => format!("Target {} · ±{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db)),
+        EffectConfig::Maximizer(m) => format!("+{:.1} dB into {}", -m.threshold_db, db(m.ceiling_db)),
     };
     s.replace("+-", "−")
 }
@@ -300,5 +417,9 @@ pub fn icon(cfg: &EffectConfig) -> &'static str {
         EffectConfig::Compressor(_) => "winfx/compressor.svg",
         EffectConfig::Gain(_) => "winfx/gain.svg",
         EffectConfig::Limiter(_) => "winfx/limiter.svg",
+        EffectConfig::Deesser(_) => "winfx/deesser.svg",
+        EffectConfig::Expander(_) => "winfx/expander.svg",
+        EffectConfig::Autogain(_) => "winfx/autogain.svg",
+        EffectConfig::Maximizer(_) => "winfx/maximizer.svg",
     }
 }

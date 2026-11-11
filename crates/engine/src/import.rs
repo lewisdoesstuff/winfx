@@ -12,7 +12,10 @@
 //! gain and Q.
 
 use crate::chain::{ChainConfig, EffectConfig, EffectSlot, EqBand, EqParams, FilterParams, MAX_SLOPE};
-use crate::dsp::{CompressorParams, FilterKind, GainParams, GateParams, LimiterParams};
+use crate::dsp::{
+    AutogainParams, CompressorParams, DeesserMode, DeesserParams, ExpanderParams, FilterKind, GainParams,
+    GateParams, LimiterParams, MaximizerParams,
+};
 use serde_json::Value;
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -225,6 +228,75 @@ pub fn from_easyeffects(json: &str) -> Result<(ChainConfig, ImportReport), Strin
                 b.report.mapped.push("Limiter".into());
                 b.report.approximated.push("Limiter: LSP's limiter modes and automatic level control".into());
                 b.gain(out_gain, bypass, "Limiter output gain");
+            }
+            "deesser" => {
+                b.gain(in_gain, bypass, "De-esser input gain");
+                let mode = if text(p, "mode") == "Wide" { DeesserMode::Wide } else { DeesserMode::Split };
+                b.push(
+                    EffectConfig::Deesser(DeesserParams {
+                        freq_hz: num(p, "f1-freq", 6000.0).clamp(1000.0, 16_000.0),
+                        threshold_db: num(p, "threshold", -18.0),
+                        ratio: num(p, "ratio", 3.0).max(1.0),
+                        range_db: 12.0,
+                        release_ms: 60.0,
+                        mode,
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("De-esser".into());
+                b.report.approximated.push("De-esser: LSP's peak sidechain filter and laxity".into());
+                b.gain(num(p, "makeup", 0.0) + out_gain, bypass, "De-esser makeup");
+            }
+            "expander" => {
+                b.check_mix(p, "Expander");
+                let mode = text(p, "mode");
+                if !mode.is_empty() && mode != "Downward" {
+                    b.report.skipped.push(format!("Expander in {mode} mode"));
+                    continue;
+                }
+                b.gain(in_gain, bypass, "Expander input gain");
+                let sc = p.get("sidechain").cloned().unwrap_or(Value::Null);
+                b.push(
+                    EffectConfig::Expander(ExpanderParams {
+                        threshold_db: num(p, "threshold", -40.0),
+                        ratio: num(p, "ratio", 2.0).max(1.0),
+                        range_db: 40.0,
+                        attack_ms: num(p, "attack", 20.0),
+                        release_ms: num(p, "release", 100.0),
+                        knee_db: num(p, "knee", -6.0).abs() * 2.0,
+                        rms_ms: if text(&sc, "mode") == "Peak" { 0.1 } else { num(&sc, "reactivity", 10.0).max(0.1) },
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Expander".into());
+                b.gain(num(p, "makeup", 0.0) + out_gain, bypass, "Expander makeup");
+            }
+            "autogain" => {
+                b.gain(in_gain, bypass, "Auto-gain input gain");
+                b.push(
+                    EffectConfig::Autogain(AutogainParams {
+                        target_lufs: num(p, "target", -18.0),
+                        silence_lufs: num(p, "silence-threshold", -45.0),
+                        ..AutogainParams::default()
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Auto-gain".into());
+                b.report.approximated.push("Auto-gain: follows momentary loudness".into());
+                b.gain(out_gain, bypass, "Auto-gain output gain");
+            }
+            "maximizer" => {
+                b.gain(in_gain, bypass, "Maximizer input gain");
+                b.push(
+                    EffectConfig::Maximizer(MaximizerParams {
+                        threshold_db: num(p, "threshold", -6.0).min(0.0),
+                        ceiling_db: -0.5,
+                        release_ms: num(p, "release", 80.0).clamp(1.0, 1000.0),
+                    }),
+                    bypass,
+                );
+                b.report.mapped.push("Maximizer".into());
+                b.gain(out_gain, bypass, "Maximizer output gain");
             }
             _ => b.report.skipped.push(pretty),
         }
@@ -471,9 +543,9 @@ mod tests {
     fn easyeffects_chain_maps_supported_plugins_in_order() {
         let (chain, report) = from_easyeffects(EE).unwrap();
         let kinds: Vec<&str> = chain.slots.iter().map(|s| s.effect.name()).collect();
-        // Gate, gate makeup (+1 dB makeup −1 dB wet = 0 → omitted), EQ, compressor, limiter.
-        assert_eq!(kinds, ["Gate", "Equalizer", "Compressor", "Limiter"]);
-        assert_eq!(report.skipped, ["Noise reduction (RNNoise)", "De-esser"]);
+        // Gate, gate makeup (+1 dB makeup −1 dB wet = 0 → omitted), EQ, compressor, de-esser, limiter.
+        assert_eq!(kinds, ["Gate", "Equalizer", "Compressor", "De-esser", "Limiter"]);
+        assert_eq!(report.skipped, ["Noise reduction (RNNoise)"]);
 
         let EffectConfig::Gate(g) = &chain.slots[0].effect else { panic!() };
         assert_eq!((g.threshold_db, g.hysteresis_db, g.range_db, g.sidechain_hpf_hz), (-50.0, 3.0, 12.0, 120.0));
@@ -488,8 +560,8 @@ mod tests {
         let EffectConfig::Compressor(c) = &chain.slots[2].effect else { panic!() };
         assert_eq!((c.threshold_db, c.ratio, c.knee_db, c.makeup_db, c.rms_ms), (-18.0, 3.0, 12.0, 3.0, 10.0));
 
-        assert!(chain.slots[3].bypass, "bypass state carries over");
-        let EffectConfig::Limiter(l) = &chain.slots[3].effect else { panic!() };
+        assert!(chain.slots[4].bypass, "bypass state carries over");
+        let EffectConfig::Limiter(l) = &chain.slots[4].effect else { panic!() };
         assert_eq!(l.ceiling_db, -1.5);
 
         // Ids are unique and the chain round-trips as a WinFX preset.

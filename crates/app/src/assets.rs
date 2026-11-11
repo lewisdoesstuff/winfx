@@ -21,6 +21,14 @@ const ICONS: &[(&str, &str)] = &[
     ("winfx/compressor.svg", icon!(r#"<path d="M4 4v16h16M4 20l8-8 8-4"/>"#)),
     ("winfx/gain.svg", icon!(r#"<path d="M3 18L21 6v12z"/>"#)),
     ("winfx/limiter.svg", icon!(r#"<path d="M3 6h18M3 16c2-6 4-6 6 0s4 6 6 0 3-4 6-4"/>"#)),
+    // De-esser: an "s" with a cut line.
+    ("winfx/deesser.svg", icon!(r#"<path d="M15 7.5c-.6-1.4-2-2.5-4-2.5-2.2 0-4 1.3-4 3s1.6 2.4 4 3 4 1.4 4 3.2-1.8 3-4 3c-2 0-3.5-1-4-2.6M4 20L20 4"/>"#)),
+    // Expander: transfer curve bending down below a knee.
+    ("winfx/expander.svg", icon!(r#"<path d="M4 4v16h16M8 20l4-6 8-8"/>"#)),
+    // Auto-gain: a level that steers toward a target line.
+    ("winfx/autogain.svg", icon!(r#"<path d="M3 12h3l3-6 3 12 3-9 2 3h4M3 4h18"/>"#)),
+    // Maximizer: arrow pushing up against a ceiling.
+    ("winfx/maximizer.svg", icon!(r#"<path d="M4 4h16M12 20V8M8 12l4-4 4 4"/>"#)),
     ("winfx/plug.svg", icon!(r#"<path d="M9 3v5M15 3v5M7 8h10v4a5 5 0 0 1-10 0zM12 17v4"/>"#)),
     (
         "winfx/grip.svg",
