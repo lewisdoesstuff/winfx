@@ -15,6 +15,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering, fence};
 pub const MAGIC: u32 = u32::from_le_bytes(*b"WNFX");
 pub const VERSION: u32 = 1;
 pub const CFG_CAP: usize = 60 * 1024;
+pub const MIX_CHANNELS: u32 = u32::MAX;
 
 #[repr(C)]
 pub struct Shared {
@@ -25,7 +26,9 @@ pub struct Shared {
     pub cfg_len: AtomicU32,
     /// 1: the APO passes audio through untouched.
     pub bypass: AtomicU32,
-    _pad: u32,
+    /// Which input channel the chain processes (0-based); `MIX_CHANNELS` = average all.
+    /// The result goes to every channel, as the virtual cable path does.
+    pub input_channel: AtomicU32,
     cfg: UnsafeCell<[u8; CFG_CAP]>,
     /// Frames processed by any APO instance (a heartbeat).
     pub frames: AtomicU64,

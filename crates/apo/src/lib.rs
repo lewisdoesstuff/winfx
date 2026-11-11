@@ -278,10 +278,16 @@ impl Core {
             (None, None) => return,
         };
 
-        // Mono mix of the input.
+        // The configured input channel (or the average of all), as mono.
+        let pick = sh.map(|s| s.input_channel.load(Relaxed)).unwrap_or(0);
         let buf = &mut scratch[..n];
         if silent {
             buf.fill(0.0);
+        } else if pick != engine::shared::MIX_CHANNELS {
+            let c = if (pick as usize) < ch { pick as usize } else { 0 };
+            for (i, m) in buf.iter_mut().enumerate() {
+                *m = unsafe { *src.add(i * ch + c) };
+            }
         } else {
             let k = 1.0 / ch as f32;
             for (i, m) in buf.iter_mut().enumerate() {

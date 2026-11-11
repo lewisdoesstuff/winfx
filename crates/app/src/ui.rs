@@ -64,6 +64,11 @@ pub struct MainView {
     /// Whole-chain mic calibration (trim + expander/gate thresholds).
     mic_calib: Option<MicCalib>,
     mic_calib_result: Option<(String, bool)>,
+    /// Direct mode readiness for the selected input (refreshed with the devices).
+    apo: ApoView,
+    /// Elevated setup running; its last error.
+    apo_busy: bool,
+    apo_error: Option<String>,
     _ticker: Task<()>,
     _subs: Vec<Subscription>,
 }
@@ -75,6 +80,16 @@ struct MicCalib {
     until: Instant,
     quiet: Vec<f32>,
     talk: Vec<f32>,
+}
+
+/// What direct mode needs on the selected input, read from the registry.
+#[derive(Clone, Debug, Default, PartialEq)]
+struct ApoView {
+    device_id: Option<String>,
+    guid: Option<String>,
+    installed: bool,
+    attached: bool,
+    enhancements_off: bool,
 }
 
 /// Where calibrated speech should sit after the trim (dBFS RMS, 50 ms windows).
@@ -248,6 +263,7 @@ impl MainView {
                         s.set_engine_config(|c| c.input = DeviceSel::device(&d));
                     }
                 });
+                this.refresh_apo(cx);
                 cx.notify();
             }),
             cx.subscribe_in(&output_sel, window, |this, _, ev: &SelectEvent<Vec<SharedString>>, _, cx| {
@@ -327,15 +343,84 @@ impl MainView {
             calib_result: None,
             mic_calib: None,
             mic_calib_result: None,
+            apo: ApoView::default(),
+            apo_busy: false,
+            apo_error: None,
             _ticker: ticker,
             _subs: subs,
         };
         view.rebuild_cards(window, cx);
+        view.refresh_apo(cx);
         // A preset file passed on the command line ("Open with WinFX").
         if let Some(path) = view.state.update(cx, |s, _| s.pending_import.take()) {
             view.import_path(&path, window, cx);
         }
         view
+    }
+
+    // ---------- direct mode ----------
+
+    fn refresh_apo(&mut self, cx: &mut Context<Self>) {
+        let device_id = match &self.state.read(cx).config.engine.input {
+            DeviceSel::Device { id, .. } => Some(id.clone()),
+            DeviceSel::Default => {
+                engine::devices::default_device(engine::devices::Dir::Input, engine::devices::Role::Console).map(|d| d.id)
+            }
+        };
+        let guid = device_id.as_deref().and_then(engine::apo::endpoint_guid).map(str::to_string);
+        let v = ApoView {
+            installed: engine::apo::installed(),
+            attached: guid.as_deref().is_some_and(engine::apo::attached),
+            enhancements_off: guid.as_deref().is_some_and(engine::apo::enhancements_off),
+            device_id,
+            guid,
+        };
+        if v != self.apo {
+            self.apo = v;
+            cx.notify();
+        }
+    }
+
+    fn set_direct(&mut self, on: bool, cx: &mut Context<Self>) {
+        self.state.update(cx, |s, _| s.set_engine_config(|c| c.direct = on));
+        self.apo_error = None;
+        self.refresh_apo(cx);
+        cx.notify();
+    }
+
+    /// One UAC prompt: install the APO on this input (and its other-rate
+    /// endpoints) and restart Windows audio.
+    fn run_apo_setup(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(guid) = self.apo.guid.clone() else { return };
+        if self.apo_busy {
+            return;
+        }
+        self.apo_busy = true;
+        self.apo_error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let r = cx
+                .background_executor()
+                .spawn(async move { crate::system::run_elevated(&format!("--apo-setup {guid}")) })
+                .await;
+            let _ = this.update(cx, |this, cx| {
+                this.apo_busy = false;
+                this.apo_error = r.err();
+                this.refresh_apo(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    fn turn_on_enhancements(&mut self, cx: &mut Context<Self>) {
+        if let Some(id) = self.apo.device_id.clone() {
+            if let Err(e) = engine::apo::set_enhancements(&id, true) {
+                self.apo_error = Some(format!("Couldn't turn on audio enhancements: {}", e.message()));
+            }
+        }
+        self.refresh_apo(cx);
+        cx.notify();
     }
 
     fn edit_chain(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut ChainConfig)) {
@@ -771,6 +856,7 @@ impl MainView {
     }
 
     fn poll_devices(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.refresh_apo(cx);
         let (inputs, outputs, mons, ein, eout, emon) = self.state.update(cx, |s, _| {
             s.refresh_devices();
             (
@@ -1128,12 +1214,20 @@ impl MainView {
             let s = self.state.read(cx);
             (s.engine.tap().clone(), self.status.audition_device.clone(), self.status.audition_error.clone())
         };
+        let direct = self.state.read(cx).config.engine.direct;
         let recording = tap.is_recording();
         let playing = tap.is_auditioning();
         let has = tap.has_recording();
         let secs = tap.recorded_seconds();
         let caption = if recording {
-            format!("Recording... {secs:.1} s of {} s", engine::tap::REC_SECONDS)
+            if direct {
+                // The APO passes the raw input through while the clip records.
+                format!("Recording... {secs:.1} s of {} s. Effects are off meanwhile.", engine::tap::REC_SECONDS)
+            } else {
+                format!("Recording... {secs:.1} s of {} s", engine::tap::REC_SECONDS)
+            }
+        } else if playing && direct {
+            format!("Looping {secs:.1} s through the effects to {}.", audition_device.unwrap_or_else(|| "the default device".into()))
         } else if playing {
             format!(
                 "Looping {secs:.1} s through the effects to {}. The output is muted meanwhile.",
@@ -1397,7 +1491,39 @@ impl MainView {
         let st = &self.status;
         let meters = self.state.read(cx).engine.meters().clone();
         let dropouts = meters.underruns.load(Relaxed) + meters.overflows.load(Relaxed);
+        let direct = self.state.read(cx).config.engine.direct;
+        let direct_problem = if !direct || st.state != RunState::Running {
+            None
+        } else if !self.apo.installed || !self.apo.attached {
+            Some("Direct mode isn't set up on the input device.".to_string())
+        } else if self.apo.enhancements_off {
+            Some("Audio enhancements are off for the input device.".to_string())
+        } else {
+            match &st.direct {
+                Some(d) if d.error.is_some() => d.error.as_deref().map(sentence),
+                Some(d) if !d.active => Some("The effects aren't running on the input device.".to_string()),
+                _ => None,
+            }
+        };
+        if let Some(problem) = direct_problem {
+            return fluent::info_bar(Severity::Warning, "Not processing", problem, cx).into_any_element();
+        }
         match st.state {
+            RunState::Running if direct => fluent::info_bar(
+                if dropouts > 0 { Severity::Warning } else { Severity::Success },
+                "Active",
+                format!(
+                    "{}, {}",
+                    if st.latency_ms < 0.5 { "no added latency".to_string() } else { format!("{:.0} ms latency", st.latency_ms) },
+                    match dropouts {
+                        0 => "no dropouts".to_string(),
+                        1 => "1 dropout".to_string(),
+                        n => format!("{n} dropouts"),
+                    }
+                ),
+                cx,
+            )
+            .into_any_element(),
             RunState::Running => fluent::info_bar(
                 if dropouts > 0 { Severity::Warning } else { Severity::Success },
                 "Active",
@@ -1429,11 +1555,41 @@ impl MainView {
         }
     }
 
+    /// Output: virtual cable or direct (effects on the input device itself).
+    fn render_output_mode(&self, direct: bool, cx: &mut Context<Self>) -> gpui::Div {
+        let p = fl(cx).clone();
+        let segment = |id: &'static str, label: &'static str, active: bool| {
+            div()
+                .id(id)
+                .flex_1()
+                .h(px(28.))
+                .px(px(12.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(4.))
+                .cursor_pointer()
+                .when(active, |d| d.bg(p.accent).text_color(p.on_accent))
+                .when(!active, |d| d.text_color(p.text).hover(|s| s.bg(p.subtle_hover)))
+                .child(label)
+        };
+        div()
+            .flex()
+            .p(px(2.))
+            .gap(px(2.))
+            .rounded(px(6.))
+            .border_1()
+            .border_color(p.control_stroke)
+            .child(segment("out-cable", "Virtual cable", !direct).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_direct(false, cx))))
+            .child(segment("out-direct", "Direct", direct).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_direct(true, cx))))
+    }
+
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let status = self.render_status(cx);
         let p = fl(cx).clone();
         let s = self.state.read(cx);
         let exclusive = s.config.engine.exclusive_input;
+        let direct = s.config.engine.direct;
         let mon = s.config.engine.monitor.clone();
         // Device captions only appear when something is wrong.
         let input_caption = if self.status.input.is_some() { String::new() } else { "Not connected".into() };
@@ -1503,17 +1659,20 @@ impl MainView {
             .child(Select::new(&self.input_sel).placeholder("Choose a device"))
             .child(fluent::level_meter("Input level", self.levels.in_peak, self.levels.in_rms, cx))
             .child(mic_calib_row)
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .justify_between()
-                    .child("Exclusive mode")
-                    .child(fluent::switch("exclusive", exclusive, "Lower latency. Other apps can't use this device while WinFX is running.", cx, {
-                        let state = self.state.clone();
-                        move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_input = on))
-                    })),
-            );
+            // Direct mode must share the input: exclusive capture would bypass the effects.
+            .when(!direct, |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_between()
+                        .child("Exclusive mode")
+                        .child(fluent::switch("exclusive", exclusive, "Lower latency. Other apps can't use this device while WinFX is running.", cx, {
+                            let state = self.state.clone();
+                            move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_input = on))
+                        })),
+                )
+            });
 
         let exclusive_out = s.config.engine.exclusive_output;
         let output_caption = if self.status.output.is_some() { String::new() } else { "Not connected".into() };
@@ -1539,12 +1698,63 @@ impl MainView {
                 p.text2,
             ),
         };
+        let direct_card = {
+            let input_name = self.status.input.as_ref().map(|i| i.name.clone()).unwrap_or_else(|| "the input device".into());
+            let not_running = self.status.state == RunState::Running && self.status.direct.as_ref().is_some_and(|d| !d.active);
+            let (text, color, action): (String, gpui::Hsla, Option<(&'static str, bool)>) = if self.apo_busy {
+                ("Setting up. Approve the Windows prompt to continue.".into(), p.accent_text, None)
+            } else if !self.apo.installed || !self.apo.attached {
+                ("Effects need a one-time setup on this device. Windows asks for permission, and audio restarts briefly.".into(), p.text2, Some(("Set up", true)))
+            } else if self.apo.enhancements_off {
+                ("Audio enhancements are off for this device, so the effects can't run.".into(), p.caution, Some(("Turn on", false)))
+            } else if not_running {
+                ("The effects aren't running on this device. Setting up again restarts Windows audio.".into(), p.caution, Some(("Set up", true)))
+            } else {
+                (format!("Apps use \"{input_name}\" directly."), p.text2, None)
+            };
+            let latency = if self.status.latency_ms < 0.5 {
+                "Latency: none added".to_string()
+            } else {
+                format!("Latency: {:.0} ms", self.status.latency_ms)
+            };
+            fluent::card(cx)
+                .p(px(16.))
+                .flex()
+                .flex_col()
+                .gap(px(12.))
+                .child(header(svg().path("winfx/plug.svg").size(px(20.)).flex_none().text_color(p.text).into_any_element(), "Output", String::new()))
+                .child(self.render_output_mode(direct, cx))
+                .child(fluent::level_meter("Output level", self.levels.out_peak, self.levels.out_rms, cx))
+                .child(
+                    div()
+                        .flex()
+                        .flex_row()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
+                        .children(action.map(|(label, setup)| {
+                            fluent::button("direct-action", cx).child(label).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                if setup {
+                                    this.run_apo_setup(window, cx);
+                                } else {
+                                    this.turn_on_enhancements(cx);
+                                }
+                            }))
+                        })),
+                )
+                .when_some(self.apo_error.clone(), |d, e| {
+                    d.child(div().text_xs().line_height(px(16.)).text_color(p.critical).child(sentence(&e)))
+                })
+                .child(latency)
+        };
+
         let cable_card = fluent::card(cx)
             .p(px(16.))
             .flex()
             .flex_col()
             .gap(px(12.))
             .child(header(plug, "Output", output_caption))
+            .child(self.render_output_mode(direct, cx))
             .child(Select::new(&self.output_sel).placeholder("Choose a device"))
             .child(fluent::level_meter("Output level", self.levels.out_peak, self.levels.out_rms, cx))
             .child(
@@ -1678,7 +1888,7 @@ impl MainView {
                     .child(status)
                     .child(fluent::section_title("Devices", cx))
                     .child(mic_card)
-                    .child(cable_card)
+                    .child(if direct { direct_card.into_any_element() } else { cable_card.into_any_element() })
                     .child(monitor_card)
                     .child(fluent::section_title("General", cx))
                     .child(app_card),

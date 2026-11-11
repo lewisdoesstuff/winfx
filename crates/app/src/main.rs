@@ -27,6 +27,10 @@ struct AppGlobal {
 impl Global for AppGlobal {}
 
 fn main() {
+    // Elevated helper runs (direct mode setup): no window, no single instance.
+    if let Some(code) = system::run_admin_command() {
+        std::process::exit(code);
+    }
     // --preview: synthetic engine, no tray, nothing saved, opened off-screen
     // without focus. For developing the UI while the real app holds the mic.
     let preview = std::env::args().any(|a| a == "--preview");

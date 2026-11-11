@@ -148,3 +148,77 @@ fn make_icon() -> Icon {
     }
     Icon::from_rgba(rgba, N as u32, N as u32).expect("valid icon")
 }
+
+// ---------- direct mode setup (elevated) ----------
+
+/// Where the elevated helper writes its outcome for the unelevated app.
+fn admin_result_path() -> std::path::PathBuf {
+    engine::apo::data_dir().join("admin-result.txt")
+}
+
+/// `winfx.exe --apo-setup {endpoint-guid}...` / `--apo-remove`, run elevated by
+/// `run_elevated`. Returns the exit code, or None for a normal launch.
+pub fn run_admin_command() -> Option<i32> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args.first().map(String::as_str) {
+        Some("--apo-setup") => {
+            let dll = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join("winfx_apo.dll")));
+            match dll {
+                Some(dll) if dll.exists() => engine::apo::setup(&dll, &args[1..]),
+                _ => Err("winfx_apo.dll is missing next to winfx.exe".into()),
+            }
+        }
+        Some("--apo-remove") => engine::apo::remove(),
+        _ => return None,
+    };
+    let _ = engine::apo::ensure_data_dir();
+    let text = match &result {
+        Ok(m) => format!("ok\n{m}"),
+        Err(e) => format!("error\n{e}"),
+    };
+    let _ = std::fs::write(admin_result_path(), text);
+    Some(if result.is_ok() { 0 } else { 1 })
+}
+
+/// Run this exe elevated with `args` (one UAC prompt), wait, and return what it
+/// reported. Blocks: call from a background task.
+pub fn run_elevated(args: &str) -> Result<String, String> {
+    use windows::Win32::Foundation::ERROR_CANCELLED;
+    use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE};
+    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
+
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe_w: Vec<u16> = exe.as_os_str().to_string_lossy().encode_utf16().chain(Some(0)).collect();
+    let args_w: Vec<u16> = args.encode_utf16().chain(Some(0)).collect();
+    let _ = std::fs::remove_file(admin_result_path());
+    let mut info = SHELLEXECUTEINFOW {
+        cbSize: size_of::<SHELLEXECUTEINFOW>() as u32,
+        fMask: SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: w!("runas"),
+        lpFile: PCWSTR(exe_w.as_ptr()),
+        lpParameters: PCWSTR(args_w.as_ptr()),
+        nShow: SW_HIDE.0,
+        ..Default::default()
+    };
+    if let Err(e) = unsafe { ShellExecuteExW(&mut info) } {
+        return Err(if e.code() == ERROR_CANCELLED.to_hresult() {
+            "Setup was cancelled.".into()
+        } else {
+            format!("Couldn't start setup: {}", e.message())
+        });
+    }
+    let mut code = 1u32;
+    unsafe {
+        WaitForSingleObject(info.hProcess, INFINITE);
+        let _ = GetExitCodeProcess(info.hProcess, &mut code);
+        let _ = CloseHandle(info.hProcess);
+    }
+    let text = std::fs::read_to_string(admin_result_path()).unwrap_or_default();
+    let (status, msg) = text.split_once('\n').unwrap_or(("", ""));
+    match (code, status) {
+        (0, "ok") => Ok(msg.to_string()),
+        _ if !msg.is_empty() => Err(msg.to_string()),
+        _ => Err(format!("Setup failed (exit code {code}).")),
+    }
+}

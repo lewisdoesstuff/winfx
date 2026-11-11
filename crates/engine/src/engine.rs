@@ -92,6 +92,11 @@ pub struct EngineConfig {
     pub exclusive_output: bool,
     #[serde(default)]
     pub monitor: MonitorConfig,
+    /// Direct mode: the chain runs in the WinFX APO on the input device itself
+    /// (see `apo`); WinFX only listens to the processed input, for meters and
+    /// the monitor. Off: capture, process and play into the virtual cable.
+    #[serde(default)]
+    pub direct: bool,
     pub chain: ChainConfig,
 }
 
@@ -114,6 +119,7 @@ impl Default for EngineConfig {
             exclusive_input: true,
             exclusive_output: true,
             monitor: MonitorConfig::default(),
+            direct: false,
             chain: ChainConfig::default(),
         }
     }
@@ -163,6 +169,20 @@ pub struct Status {
     /// Where an audition is playing (the monitor device), or why it can't.
     pub audition_device: Option<String>,
     pub audition_error: Option<String>,
+    /// Direct mode only: what the APO is doing.
+    pub direct: Option<DirectStatus>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DirectStatus {
+    /// The APO processed audio in the last second.
+    pub active: bool,
+    /// Streams the APO is running on (WinFX's own listener counts as one).
+    pub instances: u32,
+    /// The APO has picked up the latest chain.
+    pub in_sync: bool,
+    /// The shared memory block couldn't be opened; why.
+    pub error: Option<String>,
 }
 
 /// Measured mic → virtual-mic latency (click injected after capture, timed at
@@ -401,27 +421,148 @@ fn ms(frames: u32) -> f32 {
     frames as f32 * 1000.0 / SAMPLE_RATE as f32
 }
 
+/// Direct mode's link to the APO: pushes the chain, mirrors its meters into
+/// ours (so the UI reads one set) and watches its heartbeat.
+struct DirectLink {
+    map: Arc<crate::shared::Mapping>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl DirectLink {
+    /// While the test clip records, the APO passes the raw input through (so
+    /// the clip is unprocessed); while it plays, our capture thread runs the
+    /// chain and meters, so mirroring pauses.
+    fn open(ctl: &Ctl) -> Result<DirectLink> {
+        crate::apo::ensure_data_dir().map_err(|e| Error(format!("data folder: {e}")))?;
+        let map = Arc::new(crate::shared::Mapping::open(&crate::shared::default_path()).map_err(|e| Error(e.to_string()))?);
+        map.get().init();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let thread = {
+            let (map, stop, meters, status, tap) =
+                (map.clone(), stop.clone(), ctl.meters.clone(), ctl.status.clone(), ctl.tap.clone());
+            spawn("winfx-direct", move || {
+                let sh = map.get();
+                let mut last_frames = sh.frames.load(Relaxed);
+                let mut last_progress = Instant::now();
+                let mut tick = 0u32;
+                while !stop.load(Relaxed) {
+                    std::thread::sleep(Duration::from_millis(15));
+                    sh.bypass.store(tap.is_recording() as u32, Relaxed);
+                    let m = &sh.meters;
+                    if tap.is_auditioning() {
+                        continue;
+                    }
+                    meters.in_peak.raise(m.in_peak.take());
+                    meters.in_rms.raise(m.in_rms.take());
+                    meters.out_peak.raise(m.out_peak.take());
+                    meters.out_rms.raise(m.out_rms.take());
+                    for i in 0..crate::meters::MAX_SLOTS {
+                        meters.gr[i].raise(m.gr[i].take());
+                        meters.det[i].raise(m.det[i].take());
+                        meters.aux[i].store(m.aux[i].load());
+                    }
+                    tick += 1;
+                    if tick % 10 == 0 {
+                        let f = sh.frames.load(Relaxed);
+                        if f != last_frames {
+                            last_frames = f;
+                            last_progress = Instant::now();
+                        }
+                        let d = DirectStatus {
+                            active: last_progress.elapsed() < Duration::from_secs(1),
+                            instances: sh.instances.load(Relaxed),
+                            in_sync: sh.applied_seq.load(Relaxed) == sh.config_seq(),
+                            error: None,
+                        };
+                        let mut s = status.lock().unwrap();
+                        if s.direct.as_ref() != Some(&d) {
+                            s.direct = Some(d);
+                        }
+                    }
+                }
+            })
+        };
+        Ok(DirectLink { map, stop, thread: Some(thread) })
+    }
+
+    fn push(&self, config: &EngineConfig) {
+        let sh = self.map.get();
+        sh.input_channel.store(
+            match config.input_channel {
+                InputChannel::Mix => crate::shared::MIX_CHANNELS,
+                InputChannel::Channel(c) => c as u32,
+            },
+            Relaxed,
+        );
+        if let Ok(json) = serde_json::to_vec(&config.chain) {
+            sh.write_config(&json);
+        }
+    }
+}
+
+impl Drop for DirectLink {
+    fn drop(&mut self) {
+        self.stop.store(true, Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}
+
+/// Not in direct mode: if the APO is installed on the mic, make it pass audio
+/// through so other apps don't get a stale chain.
+fn release_apo() {
+    if crate::shared::default_path().exists() {
+        if let Ok(m) = crate::shared::Mapping::open(&crate::shared::default_path()) {
+            if m.get().valid() {
+                m.get().bypass.store(1, Relaxed);
+            }
+        }
+    }
+}
+
 fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     devices::ensure_com();
     let mut running: Option<Running> = None;
+    let mut direct: Option<DirectLink> = None;
+    if !config.direct {
+        release_apo();
+    }
     let mut retry_at = Instant::now();
     let mut monitor_retry_at: Option<Instant> = None;
     // A monitor started only for an audition, to stop when it ends.
     let mut temp_monitor = false;
 
     loop {
+        if config.direct && direct.is_none() {
+            match DirectLink::open(&ctl) {
+                Ok(l) => {
+                    l.push(&config);
+                    direct = Some(l);
+                }
+                Err(e) => {
+                    let mut s = ctl.status.lock().unwrap();
+                    s.direct = Some(DirectStatus { error: Some(e.0), ..Default::default() });
+                }
+            }
+        }
         if running.is_none() && Instant::now() >= retry_at {
             match start(&config, &ctl.meters, &ctl.tap) {
                 Ok((r, input, output)) => {
-                    let target =
-                        stream::target_frames(input.period_frames, output.period_frames, r.safety_frames);
                     let mut s = ctl.status.lock().unwrap();
-                    s.latency_ms = ms(input.period_frames)
-                        + ms(target as u32)
-                        + output.stream_latency_ms.max(ms(output.period_frames));
+                    s.latency_ms = match &output {
+                        Some(output) => {
+                            let target =
+                                stream::target_frames(input.period_frames, output.period_frames, r.safety_frames);
+                            ms(input.period_frames) + ms(target as u32) + output.stream_latency_ms.max(ms(output.period_frames))
+                        }
+                        // The APO runs inside the audio engine's own pass: only look-ahead adds delay.
+                        None => config.chain.latency_ms(),
+                    };
                     s.state = RunState::Running;
                     s.input = Some(input);
-                    s.output = Some(output);
+                    s.output = output;
                     s.last_error = None;
                     ctl.meters.reset_counters();
                     // A fresh session has no audition monitor.
@@ -488,19 +629,29 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
 
         match rx.recv_timeout(Duration::from_millis(100)) {
             Ok(Cmd::SetChain(chain)) => {
+                // Direct mode keeps a copy for the test clip.
                 if let Some(r) = &mut running {
                     let _ = r.chain_tx.push(Box::new(Chain::build(&chain, SAMPLE_RATE as f32)));
                 }
                 config.chain = chain;
+                if let Some(l) = &direct {
+                    l.push(&config);
+                    ctl.status.lock().unwrap().latency_ms = config.chain.latency_ms();
+                }
             }
             Ok(Cmd::SetConfig(c)) => {
                 config = c;
                 if let Some(r) = running.take() {
                     r.stop();
                 }
+                if !config.direct && direct.take().is_some() {
+                    release_apo();
+                }
                 let mut s = ctl.status.lock().unwrap();
                 s.state = RunState::Starting;
                 s.monitor = None;
+                s.direct = None;
+                s.latency_test = LatencyTest::Idle;
                 retry_at = Instant::now();
             }
             Ok(Cmd::SetMonitor(m)) => {
@@ -554,6 +705,9 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                 match &running {
                     _ if s.latency_test == LatencyTest::Running => {}
                     None => s.latency_test = LatencyTest::Failed("audio isn't running".into()),
+                    Some(_) if config.direct => {
+                        s.latency_test = LatencyTest::Failed("not needed in direct mode".into())
+                    }
                     Some(r) => {
                         s.latency_test = LatencyTest::Running;
                         let (session, out_name, status) = (r.session.clone(), r.output_name.clone(), ctl.status.clone());
@@ -570,6 +724,8 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     if let Some(r) = running.take() {
         r.stop();
     }
+    // In direct mode the APO keeps processing after WinFX exits, with the last chain.
+    drop(direct);
     let mut s = ctl.status.lock().unwrap();
     s.state = RunState::Stopped;
     s.monitor = None;
@@ -595,8 +751,14 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
         let mut s = ctl.status.lock().unwrap();
         s.state = RunState::Running;
         s.input = Some(fake("Mic | Line | Instrument 1 (Audient EVO4)", 1, 144, true));
-        s.output = Some(fake("CABLE Input (VB-Audio Virtual Cable)", 2, 128, false));
-        s.latency_ms = 14.0;
+        if config.direct {
+            s.output = None;
+            s.latency_ms = config.chain.latency_ms();
+            s.direct = Some(DirectStatus { active: true, instances: 1, in_sync: true, error: None });
+        } else {
+            s.output = Some(fake("CABLE Input (VB-Audio Virtual Cable)", 2, 128, false));
+            s.latency_ms = 14.0;
+        }
         s.monitor = config.monitor.enabled.then(monitor_info);
         s.monitor_latency_ms = 28.0;
     }
@@ -604,7 +766,19 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
     loop {
         match rx.recv_timeout(Duration::from_millis(20)) {
             Ok(Cmd::SetChain(c)) => config.chain = c,
-            Ok(Cmd::SetConfig(c)) => config = c,
+            Ok(Cmd::SetConfig(c)) => {
+                let mut s = ctl.status.lock().unwrap();
+                if c.direct {
+                    s.output = None;
+                    s.latency_ms = c.chain.latency_ms();
+                    s.direct = Some(DirectStatus { active: true, instances: 1, in_sync: true, error: None });
+                } else {
+                    s.output = Some(fake("CABLE Input (VB-Audio Virtual Cable)", 2, 128, false));
+                    s.latency_ms = 14.0;
+                    s.direct = None;
+                }
+                config = c;
+            }
             Ok(Cmd::SetMonitor(m)) => {
                 config.monitor = m;
                 ctl.status.lock().unwrap().monitor = config.monitor.enabled.then(monitor_info);
@@ -650,7 +824,7 @@ fn start(
     config: &EngineConfig,
     meters: &Arc<Meters>,
     tap: &Arc<crate::tap::Tap>,
-) -> Result<(Running, StreamInfo, StreamInfo)> {
+) -> Result<(Running, StreamInfo, Option<StreamInfo>)> {
     // Resolve the input up front so we can refuse to record our own output:
     // with CABLE Output as the input, the chain would feed back into itself.
     let input = match &config.input {
@@ -667,6 +841,7 @@ fn start(
     }
     let input_id = Some(input.id);
     let output_id = match &config.output {
+        _ if config.direct => String::new(),
         DeviceSel::Device { id, name } => resolve(devices::Dir::Output, id, name)?.id,
         DeviceSel::Default => {
             devices::find_cable_input()?
@@ -685,10 +860,12 @@ fn start(
     let (monitor_trash_tx, monitor_trash_rx) = RingBuffer::<Producer<f32>>::new(4);
     let (ready_tx, ready_rx) = mpsc::channel();
 
+    // Direct mode listens to the processed input in shared mode (exclusive
+    // would bypass the APO) and only runs the chain for the test clip.
     let cap = CaptureArgs {
         device_id: input_id,
         channel: config.input_channel,
-        exclusive: config.exclusive_input,
+        exclusive: config.exclusive_input && !config.direct,
         chain: Box::new(Chain::build(&config.chain, SAMPLE_RATE as f32)),
         chain_rx,
         trash_tx,
@@ -698,6 +875,7 @@ fn start(
         meters: meters.clone(),
         session: session.clone(),
         tap: tap.clone(),
+        discard: config.direct,
     };
     let ren = RenderArgs {
         device_id: output_id,
@@ -707,13 +885,15 @@ fn start(
         monitor_gain: None,
         exclusive: config.exclusive_output,
     };
-    let threads = vec![
-        spawn("winfx-capture", {
-            let r = ready_tx.clone();
-            move || stream::capture_thread(cap, r)
-        }),
-        spawn("winfx-render", move || stream::render_thread(ren, ready_tx)),
-    ];
+    let mut threads = vec![spawn("winfx-capture", {
+        let r = ready_tx.clone();
+        move || stream::capture_thread(cap, r)
+    })];
+    if !config.direct {
+        threads.push(spawn("winfx-render", move || stream::render_thread(ren, ready_tx)));
+    } else {
+        drop((ren, ready_tx));
+    }
     let mut running = Running {
         session,
         threads,
@@ -729,7 +909,7 @@ fn start(
 
     let (mut input, mut output) = (None, None);
     let deadline = Instant::now() + READY_TIMEOUT;
-    while input.is_none() || output.is_none() {
+    while input.is_none() || (output.is_none() && !config.direct) {
         let left = deadline.saturating_duration_since(Instant::now());
         let msg = match ready_rx.recv_timeout(left) {
             Ok(m) => m,
@@ -751,7 +931,7 @@ fn start(
     let input = input.unwrap();
     running.input_period = input.period_frames;
     running.output_name = output.as_ref().map(|o| o.name.clone()).unwrap_or_default();
-    Ok((running, input, output.unwrap()))
+    Ok((running, input, output))
 }
 
 /// Runs on its own thread: find the cable's recording side, listen for the

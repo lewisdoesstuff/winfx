@@ -79,6 +79,10 @@ impl AppState {
             window: None,
         });
         let first_run = first_run && !preview;
+        // Dev aid for screenshots: preview direct mode without touching the saved config.
+        if preview && std::env::var_os("WINFX_DIRECT").is_some() {
+            config.engine.direct = true;
+        }
 
         let mut s = AppState {
             engine: if preview {

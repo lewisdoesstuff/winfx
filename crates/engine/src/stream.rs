@@ -303,6 +303,8 @@ pub(crate) struct CaptureArgs {
     pub meters: Arc<Meters>,
     pub session: Arc<Session>,
     pub tap: Arc<crate::tap::Tap>,
+    /// Direct mode: nothing plays the ring, so don't fill it.
+    pub discard: bool,
 }
 
 pub(crate) fn capture_thread(a: CaptureArgs, ready: Ready) {
@@ -407,11 +409,17 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
             // Tuning tools: record the raw mic; while auditioning, the recording replaces it.
             let auditioning = a.tap.input(block);
 
-            let (peak, rms) = block_levels(block);
-            a.meters.in_peak.raise(peak);
-            a.meters.in_rms.raise(rms);
-            dry[..n].copy_from_slice(block);
-            a.chain.process(block, &a.meters);
+            // Direct mode: the APO already processed the live input; run our
+            // chain (and meter it) only for the test clip.
+            if !a.discard || auditioning {
+                let (peak, rms) = block_levels(block);
+                a.meters.in_peak.raise(peak);
+                a.meters.in_rms.raise(rms);
+                dry[..n].copy_from_slice(block);
+                a.chain.process(block, &a.meters);
+            } else {
+                dry[..n].copy_from_slice(block);
+            }
 
             // A/B: crossfade to the (level-matched) original.
             let (ab_target, dry_gain) = match a.tap.original_gain() {
@@ -449,11 +457,12 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
 
             a.tap.scope_write(block);
 
-            let free = a.ring.slots();
-            if free < n {
+            let free = if a.discard { 0 } else { a.ring.slots() };
+            if free < n && !a.discard {
                 a.meters.overflows.fetch_add(1, Relaxed);
             }
-            if let Ok(chunk) = a.ring.write_chunk_uninit(n.min(free)) {
+            if a.discard {
+            } else if let Ok(chunk) = a.ring.write_chunk_uninit(n.min(free)) {
                 if auditioning {
                     // Nobody on a call should hear the audition loop.
                     chunk.fill_from_iter(std::iter::repeat(0.0));
