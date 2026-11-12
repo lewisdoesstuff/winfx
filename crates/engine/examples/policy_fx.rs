@@ -51,7 +51,7 @@ fn main() -> windows::core::Result<()> {
         let vt = &**(pc.as_raw() as *const *const IPolicyConfig_Vtbl);
         let mut cur = PROPVARIANT::default();
         (vt.GetPropertyValue)(pc.as_raw(), PCWSTR(id.as_ptr()), true.into(), &key, &mut cur).ok()?;
-        println!("current: {}", cur.to_string());
+        println!("current: {cur}");
         let _ = PropVariantClear(&mut cur);
         if val != "show" {
             let v = match val.strip_prefix("u32:") {
@@ -61,7 +61,7 @@ fn main() -> windows::core::Result<()> {
             (vt.SetPropertyValue)(pc.as_raw(), PCWSTR(id.as_ptr()), true.into(), &key, &v).ok()?;
             let mut now = PROPVARIANT::default();
             (vt.GetPropertyValue)(pc.as_raw(), PCWSTR(id.as_ptr()), true.into(), &key, &mut now).ok()?;
-            println!("now:     {}", now.to_string());
+            println!("now:     {now}");
         }
     }
     Ok(())

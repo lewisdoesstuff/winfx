@@ -151,7 +151,7 @@ mod tests {
     fn run(mut f: impl FnMut(f32) -> f32, freq: f32) -> Vec<f32> {
         let x: Vec<f32> =
             (0..48_000).map(|n| 0.3 * (2.0 * std::f32::consts::PI * freq * n as f32 / 48_000.0).sin()).collect();
-        x.into_iter().map(|s| f(s)).collect::<Vec<_>>()[24_000..].to_vec()
+        x.into_iter().map(&mut f).collect::<Vec<_>>()[24_000..].to_vec()
     }
 
     #[test]

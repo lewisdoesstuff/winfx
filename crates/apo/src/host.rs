@@ -7,6 +7,8 @@
 //!            put the old chain in `trash`
 //!   watcher: free whatever is in `trash`
 //! so the real-time thread never allocates or frees.
+// Unit tests never register an instance (lib.rs skips it), so the watcher is unused there.
+#![cfg_attr(test, allow(dead_code))]
 
 use crate::log;
 use engine::shared::{Mapping, Shared, default_path};
