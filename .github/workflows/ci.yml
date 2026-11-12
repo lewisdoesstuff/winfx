@@ -13,6 +13,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
 
+# CI never debugs its builds, and debug info makes compiling and linking much slower.
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+
 jobs:
   build:
     runs-on: windows-latest
@@ -26,6 +30,9 @@ jobs:
           components: rustfmt, clippy
 
       - uses: Swatinem/rust-cache@v2
+        with:
+          # Bump to start a fresh cache: an exact key hit never re-saves.
+          prefix-key: v1-dev
 
       - name: Format
         run: cargo fmt --all -- --check
