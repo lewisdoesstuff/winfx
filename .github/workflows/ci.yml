@@ -4,9 +4,9 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", "site/**", ".github/workflows/pages.yml"]
   pull_request:
-    paths-ignore: ["**.md", "docs/**"]
+    paths-ignore: ["**.md", "docs/**", "site/**", ".github/workflows/pages.yml"]
 
 # A newer push to the same branch or PR replaces the run in progress.
 concurrency:
