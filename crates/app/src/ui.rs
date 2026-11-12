@@ -368,8 +368,16 @@ impl MainView {
             }
         };
         let guid = device_id.as_deref().and_then(engine::apo::endpoint_guid).map(str::to_string);
+        let installed = engine::apo::installed();
+        // Some drivers create new endpoints (e.g. per sample rate). Attaching
+        // needs no admin, and a brand-new endpoint picks it up right away.
+        if installed && self.state.read(cx).config.engine.direct {
+            if let Some(g) = guid.as_deref().filter(|g| !engine::apo::attached(g)) {
+                let _ = engine::apo::attach_unelevated(g);
+            }
+        }
         let v = ApoView {
-            installed: engine::apo::installed(),
+            installed,
             attached: guid.as_deref().is_some_and(engine::apo::attached),
             enhancements_off: guid.as_deref().is_some_and(engine::apo::enhancements_off),
             device_id,
@@ -403,6 +411,26 @@ impl MainView {
                 .background_executor()
                 .spawn(async move { crate::system::run_elevated(&format!("--apo-setup {guid}")) })
                 .await;
+            let _ = this.update(cx, |this, cx| {
+                this.apo_busy = false;
+                this.apo_error = r.err();
+                this.refresh_apo(cx);
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// One UAC prompt: detach the APO everywhere, unregister it, restart audio.
+    fn run_apo_remove(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.apo_busy {
+            return;
+        }
+        self.apo_busy = true;
+        self.apo_error = None;
+        cx.notify();
+        cx.spawn_in(window, async move |this, cx| {
+            let r = cx.background_executor().spawn(async move { crate::system::run_elevated("--apo-remove") }).await;
             let _ = this.update(cx, |this, cx| {
                 this.apo_busy = false;
                 this.apo_error = r.err();
@@ -1845,31 +1873,57 @@ impl MainView {
                 )
             });
 
-        let app_card = fluent::card(cx).px(px(16.)).child(
-            div()
-                .min_h(px(64.))
-                .flex()
-                .items_center()
-                .gap(px(12.))
-                .child(
+        let app_card = fluent::card(cx)
+            .px(px(16.))
+            .child(
+                div()
+                    .min_h(px(64.))
+                    .flex()
+                    .items_center()
+                    .gap(px(12.))
+                    .child(div().flex_1().child("Start at login"))
+                    .child(fluent::switch("autostart", self.autostart, "", cx, {
+                        let view = cx.entity();
+                        move |on, _, cx| {
+                            view.update(cx, |this, cx| {
+                                if system::set_autostart(on) {
+                                    this.autostart = on;
+                                }
+                                cx.notify();
+                            })
+                        }
+                    })),
+            )
+            // Only once direct mode has been set up: the way to undo it.
+            .when(self.apo.installed, |d| {
+                d.child(
                     div()
+                        .min_h(px(64.))
                         .flex()
-                        .flex_col()
-                        .flex_1()
-                        .child("Start at login"),
+                        .items_center()
+                        .gap(px(12.))
+                        .border_t_1()
+                        .border_color(p.divider)
+                        .child(div().flex_1().child("Direct mode is set up"))
+                        .child(
+                            fluent::button("apo-remove", cx)
+                                .when(self.apo_busy, |b| b.opacity(0.5))
+                                .child("Remove")
+                                .tooltip(|w, cx| {
+                                    gpui_component::tooltip::Tooltip::new(
+                                        "Restores the input devices' original effects. Windows asks for permission, and audio restarts briefly.",
+                                    )
+                                    .build(w, cx)
+                                })
+                                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                    if this.state.read(cx).config.engine.direct {
+                                        this.set_direct(false, cx);
+                                    }
+                                    this.run_apo_remove(window, cx);
+                                })),
+                        ),
                 )
-                .child(fluent::switch("autostart", self.autostart, "", cx, {
-                    let view = cx.entity();
-                    move |on, _, cx| {
-                        view.update(cx, |this, cx| {
-                            if system::set_autostart(on) {
-                                this.autostart = on;
-                            }
-                            cx.notify();
-                        })
-                    }
-                })),
-        );
+            });
 
         div()
             .id("sidebar")

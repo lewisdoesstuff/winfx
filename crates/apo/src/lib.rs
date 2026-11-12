@@ -185,6 +185,8 @@ impl Core {
         rt.own_meters = Some(Box::default());
         rt.chain = None;
         let inst = host::Inst::new(rt.rate);
+        // Unit tests don't touch the machine's shared block.
+        #[cfg(not(test))]
         host::register(inst.clone());
         rt.inst = Some(inst);
         for c in [&self.stats.calls, &self.stats.frames, &self.stats.silent_calls, &self.stats.total_ns, &self.stats.max_ns] {

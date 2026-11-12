@@ -60,6 +60,10 @@ fn main() {
     if args.iter().any(|a| a == "--shared-out") {
         config.exclusive_output = false;
     }
+    // --direct: the WinFX APO on the input does the processing (must be set up).
+    if args.iter().any(|a| a == "--direct") {
+        config.direct = true;
+    }
 
     let slot_names: Vec<&str> = config.chain.slots.iter().map(|s| s.effect.name()).collect();
     let engine = Engine::start(config);
@@ -76,10 +80,11 @@ fn main() {
             println!();
             match st.state {
                 RunState::Running => {
-                    let i = st.input.as_ref().unwrap();
-                    let o = st.output.as_ref().unwrap();
                     println!("RUNNING  ~{:.1} ms added latency", st.latency_ms);
-                    for (label, s) in [("in ", i), ("out", o)] {
+                    for (label, s) in [("in ", st.input.as_ref()), ("out", st.output.as_ref())]
+                        .into_iter()
+                        .filter_map(|(l, s)| s.map(|s| (l, s)))
+                    {
                         println!(
                             "  {label}: {}  [{} ch, device {} Hz, period {} frames ({:.2} ms){}, stream latency {:.1} ms]",
                             s.name,
@@ -118,6 +123,16 @@ latency test: {:?}", st.latency_test);
                     gr.push_str(&format!(" {}:{:4.1}", &name[..4], v));
                 }
             }
+            let apo = match &st.direct {
+                Some(d) => format!(
+                    " | apo {} x{} {}{}",
+                    if d.active { "ACTIVE" } else { "idle" },
+                    d.instances,
+                    if d.in_sync { "synced" } else { "pending" },
+                    d.error.as_deref().map(|e| format!(" ERR {e}")).unwrap_or_default()
+                ),
+                None => String::new(),
+            };
             let mon = match (&st.monitor, &st.monitor_error) {
                 (Some(_), _) => format!(" | mon ~{:.0} ms xrun {}", st.monitor_latency_ms, m.monitor_underruns.load(Relaxed)),
                 (None, Some(e)) => format!(" | mon ERR {e}"),
@@ -136,6 +151,7 @@ latency test: {:?}", st.latency_test);
                 m.overflows.load(Relaxed),
                 m.discontinuities.load(Relaxed),
             );
+            print!("{apo}");
             let _ = std::io::Write::flush(&mut std::io::stdout());
             m.in_rms.take();
             m.out_rms.take();
