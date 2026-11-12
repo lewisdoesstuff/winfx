@@ -27,9 +27,8 @@ pub struct Analyzer {
 impl Default for Analyzer {
     fn default() -> Self {
         let fft = RealFftPlanner::<f32>::new().plan_fft_forward(N_FFT);
-        let window: Vec<f32> = (0..N_FFT)
-            .map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N_FFT as f32).cos())
-            .collect();
+        let window: Vec<f32> =
+            (0..N_FFT).map(|i| 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / N_FFT as f32).cos()).collect();
         // A full-scale sine reads 0 dB.
         let norm = 2.0 / window.iter().sum::<f32>();
         Analyzer {
@@ -90,12 +89,14 @@ mod tests {
     fn sine_peaks_in_its_column_at_its_level() {
         let tap = Tap::default();
         let sr = engine::SAMPLE_RATE as f32;
-        let block: Vec<f32> = (0..8192).map(|n| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / sr).sin()).collect();
+        let block: Vec<f32> =
+            (0..8192).map(|n| 0.5 * (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / sr).sin()).collect();
         // Fill the scope through the same path the capture thread uses.
         tap.scope_write_for_test(&block);
         let mut a = Analyzer::default();
         a.update(&tap, 0.033);
-        let (peak_col, peak_db) = a.db.iter().enumerate().fold((0, FLOOR_DB), |m, (i, d)| if *d > m.1 { (i, *d) } else { m });
+        let (peak_col, peak_db) =
+            a.db.iter().enumerate().fold((0, FLOOR_DB), |m, (i, d)| if *d > m.1 { (i, *d) } else { m });
         let f = column_freq(peak_col as f32);
         assert!((900.0..1100.0).contains(&f), "peak at {f} Hz");
         assert!((peak_db + 6.0).abs() < 1.0, "0.5 amplitude ≈ −6 dBFS, got {peak_db}");

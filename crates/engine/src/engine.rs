@@ -11,7 +11,7 @@ use crate::{Error, Result, SAMPLE_RATE};
 use rtrb::{Consumer, Producer, RingBuffer};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::Ordering::Relaxed;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -435,7 +435,8 @@ impl DirectLink {
     /// chain and meters, so mirroring pauses.
     fn open(ctl: &Ctl) -> Result<DirectLink> {
         crate::apo::ensure_data_dir().map_err(|e| Error(format!("data folder: {e}")))?;
-        let map = Arc::new(crate::shared::Mapping::open(&crate::shared::default_path()).map_err(|e| Error(e.to_string()))?);
+        let map =
+            Arc::new(crate::shared::Mapping::open(&crate::shared::default_path()).map_err(|e| Error(e.to_string()))?);
         map.get().init();
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let thread = {
@@ -515,9 +516,10 @@ impl Drop for DirectLink {
 fn release_apo() {
     if crate::shared::default_path().exists()
         && let Ok(m) = crate::shared::Mapping::open(&crate::shared::default_path())
-            && m.get().valid() {
-                m.get().bypass.store(1, Relaxed);
-            }
+        && m.get().valid()
+    {
+        m.get().bypass.store(1, Relaxed);
+    }
 }
 
 fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
@@ -553,7 +555,9 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                         Some(output) => {
                             let target =
                                 stream::target_frames(input.period_frames, output.period_frames, r.safety_frames);
-                            ms(input.period_frames) + ms(target as u32) + output.stream_latency_ms.max(ms(output.period_frames))
+                            ms(input.period_frames)
+                                + ms(target as u32)
+                                + output.stream_latency_ms.max(ms(output.period_frames))
                         }
                         // The APO runs inside the audio engine's own pass: only look-ahead adds delay.
                         None => config.chain.latency_ms(),
@@ -708,7 +712,8 @@ fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                     }
                     Some(r) => {
                         s.latency_test = LatencyTest::Running;
-                        let (session, out_name, status) = (r.session.clone(), r.output_name.clone(), ctl.status.clone());
+                        let (session, out_name, status) =
+                            (r.session.clone(), r.output_name.clone(), ctl.status.clone());
                         let chain_ms = config.chain.latency_ms();
                         spawn("winfx-latency", move || measure_latency(session, out_name, status, chain_ms));
                     }
@@ -788,8 +793,7 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                 ctl.status.lock().unwrap().monitor = config.monitor.enabled.then(monitor_info);
             }
             Ok(Cmd::MeasureLatency) => {
-                ctl.status.lock().unwrap().latency_test =
-                    LatencyTest::Failed("not available in preview mode".into());
+                ctl.status.lock().unwrap().latency_test = LatencyTest::Failed("not available in preview mode".into());
             }
             Ok(Cmd::Audition(_)) => {
                 ctl.status.lock().unwrap().audition_error = Some("not available in preview mode".into());
@@ -813,9 +817,21 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
         for (i, slot) in config.chain.slots.iter().enumerate().take(crate::meters::MAX_SLOTS) {
             let gr = match (&slot.effect, slot.bypass) {
                 (_, true) => 0.0,
-                (crate::chain::EffectConfig::Gate(g), _) => if talking { 0.0 } else { g.range_db },
-                (crate::chain::EffectConfig::Compressor(_), _) => if talking { 6.0 * syl * phrase } else { 0.0 },
-                (crate::chain::EffectConfig::Limiter(_), _) if talking => { 1.2 * syl * syl },
+                (crate::chain::EffectConfig::Gate(g), _) => {
+                    if talking {
+                        0.0
+                    } else {
+                        g.range_db
+                    }
+                }
+                (crate::chain::EffectConfig::Compressor(_), _) => {
+                    if talking {
+                        6.0 * syl * phrase
+                    } else {
+                        0.0
+                    }
+                }
+                (crate::chain::EffectConfig::Limiter(_), _) if talking => 1.2 * syl * syl,
                 _ => 0.0,
             };
             m.gr[i].raise(gr);
@@ -832,8 +848,9 @@ fn start(
     // Resolve the input up front so we can refuse to record our own output:
     // with CABLE Output as the input, the chain would feed back into itself.
     let input = match &config.input {
-        DeviceSel::Default => devices::default_device(devices::Dir::Input, devices::Role::Console)
-            .ok_or("no default recording device")?,
+        DeviceSel::Default => {
+            devices::default_device(devices::Dir::Input, devices::Role::Console).ok_or("no default recording device")?
+        }
         DeviceSel::Device { id, name } => resolve(devices::Dir::Input, id, name)?,
     };
     if is_virtual_cable(&input.name) {
@@ -847,11 +864,11 @@ fn start(
     let output_id = match &config.output {
         _ if config.direct => String::new(),
         DeviceSel::Device { id, name } => resolve(devices::Dir::Output, id, name)?.id,
-        DeviceSel::Default => {
-            devices::find_cable_input()?
-                .ok_or("no output device. Install a virtual audio cable, such as VB-Audio Virtual Cable, or choose an output")?
-                .id
-        }
+        DeviceSel::Default => devices::find_cable_input()?
+            .ok_or(
+                "no output device. Install a virtual audio cable, such as VB-Audio Virtual Cable, or choose an output",
+            )?
+            .id,
     };
 
     let safety_frames = (config.min_safety_ms.max(0.0) * SAMPLE_RATE as f32 / 1000.0) as u32;

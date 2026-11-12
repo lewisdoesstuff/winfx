@@ -22,7 +22,12 @@ const ICONS: &[(&str, &str)] = &[
     ("winfx/gain.svg", icon!(r#"<path d="M3 18L21 6v12z"/>"#)),
     ("winfx/limiter.svg", icon!(r#"<path d="M3 6h18M3 16c2-6 4-6 6 0s4 6 6 0 3-4 6-4"/>"#)),
     // De-esser: an "s" with a cut line.
-    ("winfx/deesser.svg", icon!(r#"<path d="M15 7.5c-.6-1.4-2-2.5-4-2.5-2.2 0-4 1.3-4 3s1.6 2.4 4 3 4 1.4 4 3.2-1.8 3-4 3c-2 0-3.5-1-4-2.6M4 20L20 4"/>"#)),
+    (
+        "winfx/deesser.svg",
+        icon!(
+            r#"<path d="M15 7.5c-.6-1.4-2-2.5-4-2.5-2.2 0-4 1.3-4 3s1.6 2.4 4 3 4 1.4 4 3.2-1.8 3-4 3c-2 0-3.5-1-4-2.6M4 20L20 4"/>"#
+        ),
+    ),
     // Expander: transfer curve bending down below a knee.
     ("winfx/expander.svg", icon!(r#"<path d="M4 4v16h16M8 20l4-6 8-8"/>"#)),
     // Auto-gain: a level that steers toward a target line.
@@ -30,13 +35,19 @@ const ICONS: &[(&str, &str)] = &[
     // Maximizer: arrow pushing up against a ceiling.
     ("winfx/maximizer.svg", icon!(r#"<path d="M4 4h16M12 20V8M8 12l4-4 4 4"/>"#)),
     // Exciter: sparkle.
-    ("winfx/exciter.svg", icon!(r#"<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>"#)),
+    (
+        "winfx/exciter.svg",
+        icon!(r#"<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5L18 18M6 18l2.5-2.5M15.5 8.5L18 6"/>"#),
+    ),
     // Bass enhancer: a low, wide wave.
     ("winfx/bass.svg", icon!(r#"<path d="M2 12c2.5-6 5.5-6 8 0s5.5 6 8 0 2.5-3 4-3"/>"#)),
     // Convolver: an impulse and its decaying response.
     ("winfx/convolver.svg", icon!(r#"<path d="M4 20V4M4 20h16M8 20v-9M11 20v-6M14 20v-4M17 20v-2"/>"#)),
     ("winfx/pitch.svg", icon!(r#"<path d="M4 17c3 0 3-10 6-10s3 10 6 10M17 4v6M14 7l3-3 3 3"/>"#)),
-    ("winfx/harmonizer.svg", icon!(r#"<path d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM19 16a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>"#)),
+    (
+        "winfx/harmonizer.svg",
+        icon!(r#"<path d="M9 18V6l10-2v12M9 18a2 2 0 1 1-4 0 2 2 0 0 1 4 0zM19 16a2 2 0 1 1-4 0 2 2 0 0 1 4 0z"/>"#),
+    ),
     ("winfx/autotune.svg", icon!(r#"<path d="M3 15c2-6 4-6 6 0s4 6 6 0M15 9h6M15 5h6M15 13h6"/>"#)),
     ("winfx/reverb.svg", icon!(r#"<path d="M4 20V4M8 18V8M12 16v-6M16 15v-4M20 14v-2"/>"#)),
     ("winfx/delay.svg", icon!(r#"<path d="M3 12h2M7 9v6M12 10v4M17 11v2M21 12h0"/>"#)),

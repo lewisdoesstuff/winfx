@@ -13,9 +13,9 @@
 
 use crate::chain::{ChainConfig, EffectConfig, EffectSlot, EqBand, EqParams, FilterParams, MAX_SLOPE};
 use crate::dsp::{
-    AutogainParams, BassEnhancerParams, CompressorParams, DeesserMode, DeesserParams, ExciterParams,
-    ExpanderParams, FilterKind, GainParams, GateParams, LimiterParams, MaximizerParams,
-    AutotuneParams, CrusherParams, HarmonizerParams, PitchParams, ReverbParams, Scale,
+    AutogainParams, AutotuneParams, BassEnhancerParams, CompressorParams, CrusherParams, DeesserMode, DeesserParams,
+    ExciterParams, ExpanderParams, FilterKind, GainParams, GateParams, HarmonizerParams, LimiterParams,
+    MaximizerParams, PitchParams, ReverbParams, Scale,
 };
 use serde_json::Value;
 
@@ -42,10 +42,14 @@ pub fn import(text: &str) -> Result<Imported, String> {
     let t = text.trim_start_matches('\u{feff}').trim_start();
     // A WinFX preset (e.g. shared from another machine) loads as-is.
     if t.starts_with('{')
-        && let Ok(chain) = serde_json::from_str::<ChainConfig>(t) {
-            let report = ImportReport { mapped: vec![format!("{} effects (WinFX preset)", chain.slots.len())], ..Default::default() };
-            return Ok(Imported::Chain(chain, report));
-        }
+        && let Ok(chain) = serde_json::from_str::<ChainConfig>(t)
+    {
+        let report = ImportReport {
+            mapped: vec![format!("{} effects (WinFX preset)", chain.slots.len())],
+            ..Default::default()
+        };
+        return Ok(Imported::Chain(chain, report));
+    }
     if t.starts_with('{') {
         let (c, r) = from_easyeffects(t)?;
         Ok(Imported::Chain(c, r))
@@ -336,7 +340,8 @@ pub fn from_easyeffects(json: &str) -> Result<(ChainConfig, ImportReport), Strin
                 b.gain(out_gain, bypass, "Bass enhancer output gain");
             }
             "pitch" => {
-                let (wet, dry) = (crate::dsp::db_to_lin(num(p, "wet", 0.0)), crate::dsp::db_to_lin(num(p, "dry", -100.0)));
+                let (wet, dry) =
+                    (crate::dsp::db_to_lin(num(p, "wet", 0.0)), crate::dsp::db_to_lin(num(p, "dry", -100.0)));
                 b.push(
                     EffectConfig::Pitch(PitchParams {
                         semitones: (num(p, "semitones", 0.0) + 12.0 * num(p, "octaves", 0.0)).clamp(-24.0, 24.0),
@@ -350,11 +355,26 @@ pub fn from_easyeffects(json: &str) -> Result<(ChainConfig, ImportReport), Strin
                 b.gain(in_gain + out_gain, bypass, "Pitch shift gain");
             }
             "autotune" => {
-                const NOTES: [&str; 12] = ["note-c", "note-c-sharp", "note-d", "note-d-sharp", "note-e", "note-f", "note-f-sharp", "note-g", "note-g-sharp", "note-a", "note-a-sharp", "note-b"];
+                const NOTES: [&str; 12] = [
+                    "note-c",
+                    "note-c-sharp",
+                    "note-d",
+                    "note-d-sharp",
+                    "note-e",
+                    "note-f",
+                    "note-f-sharp",
+                    "note-g",
+                    "note-g-sharp",
+                    "note-a",
+                    "note-a-sharp",
+                    "note-b",
+                ];
                 let on: Vec<bool> = NOTES.iter().map(|k| p.get(*k).and_then(Value::as_bool).unwrap_or(true)).collect();
                 const MAJOR: [usize; 7] = [0, 2, 4, 5, 7, 9, 11];
                 const MINOR: [usize; 7] = [0, 2, 3, 5, 7, 8, 10];
-                let fits = |steps: &[usize; 7], key: usize| (0..12).all(|n| on[n] == steps.iter().any(|s| (s + key) % 12 == n));
+                let fits = |steps: &[usize; 7], key: usize| {
+                    (0..12).all(|n| on[n] == steps.iter().any(|s| (s + key) % 12 == n))
+                };
                 let (key, scale) = if on.iter().all(|x| *x) {
                     (0, Scale::Chromatic)
                 } else if let Some(k) = (0..12).find(|&k| fits(&MAJOR, k)) {
@@ -496,7 +516,8 @@ fn ee_filter(p: &Value, b: &mut Builder, bypass: bool) {
         let db_per_oct: f32 = lower.split("db").next().and_then(|n| n.trim().parse().ok()).unwrap_or(12.0);
         let stages = ((db_per_oct / 12.0).round() as u8).clamp(1, MAX_SLOPE);
         // −3 dB resonance is a Butterworth (Q 0.707); every dB above raises Q accordingly.
-        let q = (std::f32::consts::FRAC_1_SQRT_2 * crate::dsp::db_to_lin(num(p, "resonance", -3.0) + 3.0)).clamp(0.3, 10.0);
+        let q =
+            (std::f32::consts::FRAC_1_SQRT_2 * crate::dsp::db_to_lin(num(p, "resonance", -3.0) + 3.0)).clamp(0.3, 10.0);
         let freq = num(p, "frequency", 80.0).clamp(10.0, 24_000.0);
         b.push(EffectConfig::Filter(FilterParams { kind, freq_hz: freq, q, slope: stages }), bypass);
         b.report.mapped.push(format!("Filter ({mode})"));
@@ -718,7 +739,9 @@ mod tests {
     #[test]
     fn winfx_presets_import_as_is() {
         let chain = ChainConfig::sm57_voice();
-        let Imported::Chain(back, _) = import(&serde_json::to_string_pretty(&chain).unwrap()).unwrap() else { panic!() };
+        let Imported::Chain(back, _) = import(&serde_json::to_string_pretty(&chain).unwrap()).unwrap() else {
+            panic!()
+        };
         assert_eq!(back, chain);
     }
 

@@ -49,7 +49,8 @@ pub fn read_mono(path: &Path, sr: f32, max_seconds: f32) -> Result<(Vec<f32>, Wa
 
 /// Write mono 32-bit float at `sr`.
 pub fn write_mono(path: &Path, samples: &[f32], sr: u32) -> Result<(), String> {
-    let spec = hound::WavSpec { channels: 1, sample_rate: sr, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+    let spec =
+        hound::WavSpec { channels: 1, sample_rate: sr, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
     let mut w = hound::WavWriter::create(path, spec).map_err(|e| format!("couldn't create the file: {e}"))?;
     for &s in samples {
         w.write_sample(s).map_err(|e| e.to_string())?;

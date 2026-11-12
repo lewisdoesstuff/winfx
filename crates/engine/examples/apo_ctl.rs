@@ -26,12 +26,18 @@ fn load(arg: &str) -> ChainConfig {
     if let Some(g) = arg.strip_prefix("gain:") {
         let gain_db: f32 = g.parse().unwrap();
         return ChainConfig {
-            slots: vec![EffectSlot { id: 1, bypass: false, effect: EffectConfig::Gain(engine::dsp::GainParams { gain_db }) }],
+            slots: vec![EffectSlot {
+                id: 1,
+                bypass: false,
+                effect: EffectConfig::Gain(engine::dsp::GainParams { gain_db }),
+            }],
         };
     }
     match engine::import::import(&std::fs::read_to_string(arg).unwrap()).unwrap() {
         engine::import::Imported::Chain(c, _) => c,
-        engine::import::Imported::Eq(eq, _) => ChainConfig { slots: vec![EffectSlot { id: 1, bypass: false, effect: EffectConfig::Eq(eq) }] },
+        engine::import::Imported::Eq(eq, _) => {
+            ChainConfig { slots: vec![EffectSlot { id: 1, bypass: false, effect: EffectConfig::Eq(eq) }] }
+        }
     }
 }
 
@@ -66,11 +72,17 @@ fn main() {
             let secs: f32 = a.get(1).and_then(|s| s.parse().ok()).unwrap_or(2.0);
             let t = std::time::Instant::now();
             let mut last = sh.frames.load(Relaxed);
-            let _ = (sh.meters.in_peak.take(), sh.meters.out_peak.take(), sh.meters.in_rms.take(), sh.meters.out_rms.take());
+            let _ = (
+                sh.meters.in_peak.take(),
+                sh.meters.out_peak.take(),
+                sh.meters.in_rms.take(),
+                sh.meters.out_rms.take(),
+            );
             while t.elapsed().as_secs_f32() < secs {
                 std::thread::sleep(std::time::Duration::from_millis(500));
                 let f = sh.frames.load(Relaxed);
-                let gr: Vec<String> = (0..8).map(|i| sh.meters.gr[i].take()).filter(|g| *g > 0.05).map(|g| format!("{g:.1}")).collect();
+                let gr: Vec<String> =
+                    (0..8).map(|i| sh.meters.gr[i].take()).filter(|g| *g > 0.05).map(|g| format!("{g:.1}")).collect();
                 println!(
                     "instances {}  {} Hz {} ch  +{} frames  cfg {}/{}  bypass {}  in {} / {} dB  out {} / {} dB  GR [{}]",
                     sh.instances.load(Relaxed),

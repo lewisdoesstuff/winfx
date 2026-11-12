@@ -1,5 +1,5 @@
 //! Show how a preset file imports:  cargo run -p engine --example import -- <file>
-use engine::import::{import, Imported};
+use engine::import::{Imported, import};
 
 fn main() {
     let path = std::env::args().nth(1).expect("usage: import <preset.json | ParametricEQ.txt>");

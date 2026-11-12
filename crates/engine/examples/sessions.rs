@@ -16,7 +16,11 @@ fn main() {
                 let pid = s.get_process_id().unwrap_or(0);
                 let state = s.get_state().map(|s| format!("{s:?}")).unwrap_or_default();
                 let exe = std::process::Command::new("powershell")
-                    .args(["-NoProfile", "-Command", &format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName")])
+                    .args([
+                        "-NoProfile",
+                        "-Command",
+                        &format!("(Get-Process -Id {pid} -ErrorAction SilentlyContinue).ProcessName"),
+                    ])
                     .output()
                     .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
                     .unwrap_or_default();

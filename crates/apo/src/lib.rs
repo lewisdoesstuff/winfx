@@ -21,8 +21,8 @@ mod log;
 
 use engine::Chain;
 use engine::meters::{Meters, block_levels};
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering::Relaxed};
+use std::sync::{Arc, Mutex};
 use windows::Win32::Foundation::{E_INVALIDARG, E_OUTOFMEMORY, E_POINTER};
 use windows::Win32::Media::Audio::Apo::*;
 use windows::Win32::System::Com::CoTaskMemAlloc;
@@ -162,7 +162,12 @@ impl Core {
         let Some(req) = requested else { return Err(E_POINTER.into()) };
         let f = float_format(req)?;
         let ok = f.guidFormatType == SUBTYPE_FLOAT && f.dwBytesPerSampleContainer == 4 && f.dwSamplesPerFrame > 0;
-        log::line(&format!("[{}] Is{which}FormatSupported {} -> {}", self.tag(), describe(&f), if ok { "yes" } else { "no" }));
+        log::line(&format!(
+            "[{}] Is{which}FormatSupported {} -> {}",
+            self.tag(),
+            describe(&f),
+            if ok { "yes" } else { "no" }
+        ));
         if ok { Ok(req.clone()) } else { Err(APOERR_FORMAT_NOT_SUPPORTED.into()) }
     }
 
@@ -172,7 +177,12 @@ impl Core {
 
     // ----- IAudioProcessingObjectConfiguration -----
 
-    pub(crate) fn lock_for_process(&self, nin: u32, ppin: *const *const APO_CONNECTION_DESCRIPTOR, nout: u32) -> Result<()> {
+    pub(crate) fn lock_for_process(
+        &self,
+        nin: u32,
+        ppin: *const *const APO_CONNECTION_DESCRIPTOR,
+        nout: u32,
+    ) -> Result<()> {
         if nin != 1 || nout != 1 || ppin.is_null() {
             return Err(E_INVALIDARG.into());
         }
@@ -192,7 +202,9 @@ impl Core {
         #[cfg(not(test))]
         host::register(inst.clone());
         rt.inst = Some(inst);
-        for c in [&self.stats.calls, &self.stats.frames, &self.stats.silent_calls, &self.stats.total_ns, &self.stats.max_ns] {
+        for c in
+            [&self.stats.calls, &self.stats.frames, &self.stats.silent_calls, &self.stats.total_ns, &self.stats.max_ns]
+        {
             c.store(0, Relaxed);
         }
         self.stats.in_peak.store(0, Relaxed);

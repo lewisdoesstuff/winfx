@@ -1,10 +1,10 @@
 //! Offline analysis: run a recording through a chain exactly as the live
 //! engine would, and measure what comes out.
 
-use crate::chain::{Chain, ChainConfig};
-use crate::dsp::{lin_to_db, Biquad, Coeffs, FilterKind};
-use crate::meters::{Meters, MAX_SLOTS};
 use crate::SAMPLE_RATE;
+use crate::chain::{Chain, ChainConfig};
+use crate::dsp::{Biquad, Coeffs, FilterKind, lin_to_db};
+use crate::meters::{MAX_SLOTS, Meters};
 use realfft::RealFftPlanner;
 
 /// Live engine's typical capture block (EVO 4, exclusive).
@@ -94,7 +94,8 @@ fn percentile(v: &[f32], q: f32) -> f32 {
 /// EBU Tech 3342 loudness range: 10th–95th percentile of gated 3 s short-term loudness.
 pub fn loudness_range(x: &[f32]) -> f32 {
     let sr = SAMPLE_RATE as f32;
-    let mut shelf = Biquad::new(Coeffs::design(FilterKind::HighShelf, 1681.97, std::f32::consts::FRAC_1_SQRT_2, 4.0, sr));
+    let mut shelf =
+        Biquad::new(Coeffs::design(FilterKind::HighShelf, 1681.97, std::f32::consts::FRAC_1_SQRT_2, 4.0, sr));
     let mut hpf = Biquad::new(Coeffs::design(FilterKind::HighPass, 38.13, 0.5003, 0.0, sr));
     let k: Vec<f32> = x.iter().map(|&s| hpf.process(shelf.process(s))).collect();
     let (block, hop) = ((3.0 * sr) as usize, (0.1 * sr) as usize);
@@ -118,7 +119,8 @@ pub fn loudness_range(x: &[f32]) -> f32 {
 /// BS.1770 integrated loudness with absolute (−70) and relative (−10 LU) gates.
 pub fn integrated_lufs(x: &[f32]) -> f32 {
     let sr = SAMPLE_RATE as f32;
-    let mut shelf = Biquad::new(Coeffs::design(FilterKind::HighShelf, 1681.97, std::f32::consts::FRAC_1_SQRT_2, 4.0, sr));
+    let mut shelf =
+        Biquad::new(Coeffs::design(FilterKind::HighShelf, 1681.97, std::f32::consts::FRAC_1_SQRT_2, 4.0, sr));
     let mut hpf = Biquad::new(Coeffs::design(FilterKind::HighPass, 38.13, 0.5003, 0.0, sr));
     let k: Vec<f32> = x.iter().map(|&s| hpf.process(shelf.process(s))).collect();
     let (block, hop) = ((0.4 * sr) as usize, (0.1 * sr) as usize);
@@ -207,7 +209,9 @@ pub fn analyze(x: &[f32], speech: &[bool]) -> Report {
             .iter()
             .map(|&fc| {
                 let (lo, hi) = (fc / 2f32.sqrt(), fc * 2f32.sqrt());
-                let e: f64 = npower[(lo / bin_hz) as usize..((hi / bin_hz) as usize).min(npower.len())].iter().sum::<f64>() / nframes as f64;
+                let e: f64 =
+                    npower[(lo / bin_hz) as usize..((hi / bin_hz) as usize).min(npower.len())].iter().sum::<f64>()
+                        / nframes as f64;
                 (fc, (10.0 * (e.max(1e-30)).log10() + 20.0 * (2.0 / wsum as f64).log10() - 3.01) as f32)
             })
             .collect()
@@ -279,7 +283,8 @@ mod tests {
     #[test]
     fn lufs_of_a_reference_tone() {
         // A 1 kHz sine at −20 dBFS peak reads about −23 LUFS (−3 dB RMS, ≈ −0.7 K-weighting + offset).
-        let x: Vec<f32> = (0..48_000 * 5).map(|n| 0.1 * (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / 48_000.0).sin()).collect();
+        let x: Vec<f32> =
+            (0..48_000 * 5).map(|n| 0.1 * (2.0 * std::f32::consts::PI * 1000.0 * n as f32 / 48_000.0).sin()).collect();
         let l = integrated_lufs(&x);
         assert!((l - (-23.0)).abs() < 0.5, "{l}");
     }

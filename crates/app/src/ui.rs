@@ -1,6 +1,6 @@
 //! Main window, Windows 11 Fluent style.
 
-use crate::fluent::{self, fl, g, Severity};
+use crate::fluent::{self, Severity, fl, g};
 use crate::params::{self, ParamKey, ParamSpec};
 use crate::state::AppState;
 use crate::system;
@@ -10,18 +10,17 @@ use engine::meters::MAX_SLOTS;
 use engine::{ChainConfig, DeviceSel, RunState};
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    anchored, canvas, deferred, div, fill, point, px, relative, size, svg, Anchor, AnyElement, App,
-    AppContext as _, Bounds, ClickEvent, Context, Entity, ExternalPaths, InteractiveElement as _, IntoElement,
-    PathPromptOptions,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
-    Pixels, Render, ScrollEvent, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, Window, WindowControlArea,
+    Anchor, AnyElement, App, AppContext as _, Bounds, ClickEvent, Context, Entity, ExternalPaths,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, PathBuilder, PathPromptOptions, Pixels, Render, ScrollEvent, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, WindowControlArea, anchored, canvas,
+    deferred, div, fill, point, px, relative, size, svg,
 };
+use gpui_component::IndexPath;
 use gpui_component::input::{Input, InputState};
 use gpui_component::scroll::ScrollableElement as _;
 use gpui_component::select::{Select, SelectEvent, SelectState};
 use gpui_component::slider::{Slider, SliderEvent, SliderScale, SliderState};
-use gpui_component::IndexPath;
 use std::cell::Cell;
 use std::rc::Rc;
 use std::sync::atomic::Ordering::Relaxed;
@@ -167,7 +166,15 @@ struct Levels {
 
 impl Default for Levels {
     fn default() -> Self {
-        Levels { in_peak: -90.0, in_rms: -90.0, out_peak: -90.0, out_rms: -90.0, gr: [0.0; MAX_SLOTS], aux: [0.0; MAX_SLOTS], last: Instant::now() }
+        Levels {
+            in_peak: -90.0,
+            in_rms: -90.0,
+            out_peak: -90.0,
+            out_rms: -90.0,
+            gr: [0.0; MAX_SLOTS],
+            aux: [0.0; MAX_SLOTS],
+            last: Instant::now(),
+        }
     }
 }
 
@@ -197,10 +204,9 @@ fn names(list: &[engine::devices::DeviceInfo]) -> Vec<SharedString> {
 
 fn selected_row(list: &[engine::devices::DeviceInfo], sel: &DeviceSel) -> Option<IndexPath> {
     match sel {
-        DeviceSel::Device { id, name } => list
-            .iter()
-            .position(|d| &d.id == id)
-            .or_else(|| list.iter().position(|d| &d.name == name)),
+        DeviceSel::Device { id, name } => {
+            list.iter().position(|d| &d.id == id).or_else(|| list.iter().position(|d| &d.name == name))
+        }
         DeviceSel::Default => list.iter().position(|d| d.name.starts_with("CABLE Input")),
     }
     .map(IndexPath::new)
@@ -232,16 +238,10 @@ impl MainView {
         let input_row = selected_row(&inputs, &s.config.engine.input);
         let output_row = selected_row(&outputs, &s.config.engine.output);
         let presets: Vec<SharedString> = s.presets.iter().map(|p| p.clone().into()).collect();
-        let preset_row = s
-            .config
-            .preset
-            .as_ref()
-            .and_then(|p| s.presets.iter().position(|x| x == p))
-            .map(IndexPath::new);
-        let device_snapshot = (
-            inputs.iter().map(|d| d.id.clone()).collect(),
-            outputs.iter().map(|d| d.id.clone()).collect(),
-        );
+        let preset_row =
+            s.config.preset.as_ref().and_then(|p| s.presets.iter().position(|x| x == p)).map(IndexPath::new);
+        let device_snapshot =
+            (inputs.iter().map(|d| d.id.clone()).collect(), outputs.iter().map(|d| d.id.clone()).collect());
         let mon_outputs = s.monitor_outputs();
         let mon_row = monitor_row(&mon_outputs, &s.config.engine.monitor.device);
         let mon_db = s.config.engine.monitor.volume_db;
@@ -250,8 +250,7 @@ impl MainView {
         let output_sel = cx.new(|cx| SelectState::new(names(&outputs), output_row, window, cx));
         let monitor_sel = cx.new(|cx| SelectState::new(names(&mon_outputs), mon_row, window, cx));
         let preset_sel = cx.new(|cx| SelectState::new(presets, preset_row, window, cx));
-        let monitor_vol =
-            cx.new(|_| SliderState::new().min(-40.0).max(6.0).step(0.5).default_value(mon_db));
+        let monitor_vol = cx.new(|_| SliderState::new().min(-40.0).max(6.0).step(0.5).default_value(mon_db));
         let preset_name = cx.new(|cx| InputState::new(window, cx).placeholder("Preset name"));
 
         let subs = vec![
@@ -300,10 +299,12 @@ impl MainView {
             }),
         ];
 
-        let ticker = cx.spawn_in(window, async move |this, cx| loop {
-            cx.background_executor().timer(Duration::from_millis(33)).await;
-            if this.update_in(cx, |this, window, cx| this.tick(window, cx)).is_err() {
-                break;
+        let ticker = cx.spawn_in(window, async move |this, cx| {
+            loop {
+                cx.background_executor().timer(Duration::from_millis(33)).await;
+                if this.update_in(cx, |this, window, cx| this.tick(window, cx)).is_err() {
+                    break;
+                }
             }
         });
 
@@ -364,17 +365,20 @@ impl MainView {
         let device_id = match &self.state.read(cx).config.engine.input {
             DeviceSel::Device { id, .. } => Some(id.clone()),
             DeviceSel::Default => {
-                engine::devices::default_device(engine::devices::Dir::Input, engine::devices::Role::Console).map(|d| d.id)
+                engine::devices::default_device(engine::devices::Dir::Input, engine::devices::Role::Console)
+                    .map(|d| d.id)
             }
         };
         let guid = device_id.as_deref().and_then(engine::apo::endpoint_guid).map(str::to_string);
         let installed = engine::apo::installed();
         // Some drivers create new endpoints (e.g. per sample rate). Attaching
         // needs no admin, and a brand-new endpoint picks it up right away.
-        if installed && self.state.read(cx).config.engine.direct
-            && let Some(g) = guid.as_deref().filter(|g| !engine::apo::attached(g)) {
-                let _ = engine::apo::attach_unelevated(g);
-            }
+        if installed
+            && self.state.read(cx).config.engine.direct
+            && let Some(g) = guid.as_deref().filter(|g| !engine::apo::attached(g))
+        {
+            let _ = engine::apo::attach_unelevated(g);
+        }
         let v = ApoView {
             installed,
             attached: guid.as_deref().is_some_and(engine::apo::attached),
@@ -442,9 +446,10 @@ impl MainView {
 
     fn turn_on_enhancements(&mut self, cx: &mut Context<Self>) {
         if let Some(id) = self.apo.device_id.clone()
-            && let Err(e) = engine::apo::set_enhancements(&id, true) {
-                self.apo_error = Some(format!("Couldn't turn on audio enhancements: {}", e.message()));
-            }
+            && let Err(e) = engine::apo::set_enhancements(&id, true)
+        {
+            self.apo_error = Some(format!("Couldn't turn on audio enhancements: {}", e.message()));
+        }
         self.refresh_apo(cx);
         cx.notify();
     }
@@ -468,19 +473,15 @@ impl MainView {
             .iter()
             .map(|slot| {
                 let is_eq = matches!(slot.effect, EffectConfig::Eq(_));
-                let expanded = old.iter().find(|(id, _)| *id == slot.id).map_or(
-                    std::env::var_os("WINFX_EXPAND_ALL").is_some()
-                        || (first_build && is_eq),
-                    |(_, e)| *e,
-                );
+                let expanded = old
+                    .iter()
+                    .find(|(id, _)| *id == slot.id)
+                    .map_or(std::env::var_os("WINFX_EXPAND_ALL").is_some() || (first_build && is_eq), |(_, e)| *e);
                 // EQ bands are edited through the graph + selected-band sliders.
                 let params = if is_eq {
                     vec![]
                 } else {
-                    params::specs(&slot.effect)
-                        .into_iter()
-                        .map(|spec| self.param_ctl(slot, spec, window, cx))
-                        .collect()
+                    params::specs(&slot.effect).into_iter().map(|spec| self.param_ctl(slot, spec, window, cx)).collect()
                 };
                 Card { id: slot.id, expanded, params }
             })
@@ -541,10 +542,8 @@ impl MainView {
                 self.param_ctl(&slot, spec, window, cx)
             })
             .collect();
-        self.eq.gain_ctl = specs
-            .into_iter()
-            .find(|s| s.key == ParamKey::EqGain)
-            .map(|spec| self.param_ctl(&slot, spec, window, cx));
+        self.eq.gain_ctl =
+            specs.into_iter().find(|s| s.key == ParamKey::EqGain).map(|spec| self.param_ctl(&slot, spec, window, cx));
 
         // Band type menu.
         let kinds: Vec<SharedString> = params::BAND_KINDS.iter().map(|(_, n)| SharedString::from(*n)).collect();
@@ -558,9 +557,10 @@ impl MainView {
             let band = this.eq.band;
             this.edit_chain(cx, |c| {
                 if let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = c.slots.iter_mut().find(|s| s.id == id)
-                    && let Some(b) = eq.bands.get_mut(band) {
-                        b.kind = *kind;
-                    }
+                    && let Some(b) = eq.bands.get_mut(band)
+                {
+                    b.kind = *kind;
+                }
             });
             // The gain slider appears/disappears with the type.
             this.select_band(band, window, cx);
@@ -572,10 +572,7 @@ impl MainView {
 
     fn eq_handles(&self, cx: &App) -> Vec<(f32, f32, bool)> {
         let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = self.eq_slot(cx) else { return vec![] };
-        eq.bands
-            .iter()
-            .map(|b| (b.freq_hz, if b.kind.has_gain() { b.gain_db } else { 0.0 }, b.enabled))
-            .collect()
+        eq.bands.iter().map(|b| (b.freq_hz, if b.kind.has_gain() { b.gain_db } else { 0.0 }, b.enabled)).collect()
     }
 
     fn eq_edit_band(&mut self, cx: &mut Context<Self>, f: impl FnOnce(&mut engine::chain::EqParams, usize)) {
@@ -623,9 +620,10 @@ impl MainView {
         });
         cx.spawn_in(window, async move |this, cx| {
             if let Ok(Ok(Some(paths))) = rx.await
-                && let Some(path) = paths.into_iter().next() {
-                    let _ = this.update_in(cx, |this, window, cx| this.import_path(&path, window, cx));
-                }
+                && let Some(path) = paths.into_iter().next()
+            {
+                let _ = this.update_in(cx, |this, window, cx| this.import_path(&path, window, cx));
+            }
         })
         .detach();
     }
@@ -658,9 +656,10 @@ impl MainView {
         self.eq.band = 0;
         self.rebuild_cards(window, cx);
         if let Some(id) = self.eq.slot
-            && let Some(c) = self.cards.iter_mut().find(|c| c.id == id) {
-                c.expanded = true;
-            }
+            && let Some(c) = self.cards.iter_mut().find(|c| c.id == id)
+        {
+            c.expanded = true;
+        }
     }
 
     fn eq_mouse_down(&mut self, pos: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -812,13 +811,18 @@ impl MainView {
             self.ab_out_ms += (o * o - self.ab_out_ms) * a;
         }
         if self.ab_original {
-            let gain = if self.ab_in_ms > 1e-10 { (self.ab_out_ms / self.ab_in_ms).sqrt().clamp(0.1, 10.0) } else { 1.0 };
+            let gain =
+                if self.ab_in_ms > 1e-10 { (self.ab_out_ms / self.ab_in_ms).sqrt().clamp(0.1, 10.0) } else { 1.0 };
             tap.set_original(true, gain);
         }
 
         // Mic calibration.
         if let Some(c) = &mut self.mic_calib {
-            if c.talking { c.talk.push(in_rms_now) } else { c.quiet.push(in_rms_now) }
+            if c.talking {
+                c.talk.push(in_rms_now)
+            } else {
+                c.quiet.push(in_rms_now)
+            }
             if Instant::now() >= c.until {
                 if !c.talking {
                     c.talking = true;
@@ -837,7 +841,11 @@ impl MainView {
                 None => self.calib = None,
                 Some(ix) => {
                     let v = lin_to_db(meters.det[ix].take()).max(-90.0);
-                    if c.talking { c.talk.push(v) } else { c.quiet.push(v) }
+                    if c.talking {
+                        c.talk.push(v)
+                    } else {
+                        c.quiet.push(v)
+                    }
                     if Instant::now() >= c.until {
                         if !c.talking {
                             c.talking = true;
@@ -1021,7 +1029,8 @@ impl MainView {
 
     fn start_mic_calibration(&mut self, cx: &mut Context<Self>) {
         self.mic_calib_result = None;
-        self.mic_calib = Some(MicCalib { talking: false, until: Instant::now() + CALIB_QUIET, quiet: vec![], talk: vec![] });
+        self.mic_calib =
+            Some(MicCalib { talking: false, until: Instant::now() + CALIB_QUIET, quiet: vec![], talk: vec![] });
         cx.notify();
     }
 
@@ -1032,7 +1041,10 @@ impl MainView {
         let mut voiced: Vec<f32> = c.talk.iter().copied().filter(|v| *v > noise + 10.0).collect();
         if voiced.len() < 10 {
             self.mic_calib_result = Some((
-                format!("No speech detected above the background noise ({}). Check the input level and try again.", fmt_db(noise)),
+                format!(
+                    "No speech detected above the background noise ({}). Check the input level and try again.",
+                    fmt_db(noise)
+                ),
                 false,
             ));
             cx.notify();
@@ -1049,7 +1061,11 @@ impl MainView {
         self.edit_chain(cx, |chain| {
             use engine::EffectConfig as E;
             // Trim = the first Gain before any dynamics; add one after leading filters if missing.
-            let first_dyn = chain.slots.iter().position(|s| !matches!(s.effect, E::Filter(_) | E::Gain(_))).unwrap_or(chain.slots.len());
+            let first_dyn = chain
+                .slots
+                .iter()
+                .position(|s| !matches!(s.effect, E::Filter(_) | E::Gain(_)))
+                .unwrap_or(chain.slots.len());
             match chain.slots[..first_dyn].iter_mut().find(|s| matches!(s.effect, E::Gain(_))) {
                 Some(EffectSlot { effect: E::Gain(g), bypass, .. }) => {
                     g.gain_db = trim;
@@ -1057,8 +1073,12 @@ impl MainView {
                 }
                 _ => {
                     let id = chain.next_id();
-                    let at = chain.slots.iter().position(|s| !matches!(s.effect, E::Filter(_))).unwrap_or(chain.slots.len());
-                    chain.slots.insert(at, EffectSlot { id, bypass: false, effect: E::Gain(engine::dsp::GainParams { gain_db: trim }) });
+                    let at =
+                        chain.slots.iter().position(|s| !matches!(s.effect, E::Filter(_))).unwrap_or(chain.slots.len());
+                    chain.slots.insert(
+                        at,
+                        EffectSlot { id, bypass: false, effect: E::Gain(engine::dsp::GainParams { gain_db: trim }) },
+                    );
                 }
             }
             for slot in &mut chain.slots {
@@ -1097,7 +1117,8 @@ impl MainView {
 
     fn start_calibration(&mut self, slot: u32, cx: &mut Context<Self>) {
         self.calib_result = None;
-        self.calib = Some(Calib { slot, talking: false, until: Instant::now() + CALIB_QUIET, quiet: vec![], talk: vec![] });
+        self.calib =
+            Some(Calib { slot, talking: false, until: Instant::now() + CALIB_QUIET, quiet: vec![], talk: vec![] });
         cx.notify();
     }
 
@@ -1109,7 +1130,8 @@ impl MainView {
         let gap = voice - threshold;
         let id = c.slot;
         self.edit_chain(cx, |chain| {
-            if let Some(EffectSlot { effect: EffectConfig::Gate(g), .. }) = chain.slots.iter_mut().find(|s| s.id == id) {
+            if let Some(EffectSlot { effect: EffectConfig::Gate(g), .. }) = chain.slots.iter_mut().find(|s| s.id == id)
+            {
                 g.threshold_db = threshold;
             }
         });
@@ -1127,7 +1149,10 @@ impl MainView {
             (
                 format!(
                     "Threshold set to {}, but speech ({}) is only {:.0} dB above the noise ({}). Raise the input level or move closer to the mic, then calibrate again.",
-                    f(threshold), f(voice), gap.max(0.0), f(noise)
+                    f(threshold),
+                    f(voice),
+                    gap.max(0.0),
+                    f(noise)
                 ),
                 false,
             )
@@ -1205,7 +1230,10 @@ fn transfer_curve(c: &engine::dsp::CompressorParams, cx: &App) -> impl IntoEleme
                         window.paint_quad(fill(b, bg));
                         let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
                         let at = |x_db: f32, y_db: f32| {
-                            point(b.origin.x + px((x_db + 60.0) / 60.0 * w), b.origin.y + px(h - (y_db + 60.0) / 60.0 * h))
+                            point(
+                                b.origin.x + px((x_db + 60.0) / 60.0 * w),
+                                b.origin.y + px(h - (y_db + 60.0) / 60.0 * h),
+                            )
                         };
                         let mut diag = PathBuilder::stroke(px(1.));
                         diag.move_to(at(-60.0, -60.0));
@@ -1250,7 +1278,10 @@ impl MainView {
                 format!("Recording... {secs:.1} s of {} s", engine::tap::REC_SECONDS)
             }
         } else if playing && direct {
-            format!("Looping {secs:.1} s through the effects to {}.", audition_device.unwrap_or_else(|| "the default device".into()))
+            format!(
+                "Looping {secs:.1} s through the effects to {}.",
+                audition_device.unwrap_or_else(|| "the default device".into())
+            )
         } else if playing {
             format!(
                 "Looping {secs:.1} s through the effects to {}. The output is muted meanwhile.",
@@ -1295,20 +1326,26 @@ impl MainView {
                     .text_color(p.accent_text)
                     .child(fluent::glyph(g::HEADPHONE, 18.)),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .flex_1()
-                    .min_w(px(220.))
-                    .child("Test clip")
-                    .when(!caption.is_empty(), |d| d.child(div().text_xs().line_height(px(16.)).text_color(if recording { p.critical } else { p.text2 }).child(caption))),
-            )
+            .child(div().flex().flex_col().flex_1().min_w(px(220.)).child("Test clip").when(!caption.is_empty(), |d| {
+                d.child(
+                    div()
+                        .text_xs()
+                        .line_height(px(16.))
+                        .text_color(if recording { p.critical } else { p.text2 })
+                        .child(caption),
+                )
+            }))
             .child(
                 fluent::button("rec", cx)
                     .when(recording, |b| b.text_color(p.critical))
                     .child(fluent::glyph(if recording { g::STOP } else { g::RECORD }, 12.))
-                    .child(if recording { "Stop" } else if has { "Record again" } else { "Record" })
+                    .child(if recording {
+                        "Stop"
+                    } else if has {
+                        "Record again"
+                    } else {
+                        "Record"
+                    })
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_record(cx))),
             )
             .when(has && !recording, |d| {
@@ -1316,7 +1353,10 @@ impl MainView {
                     fluent::subtle_button("rec-save", cx)
                         .child(fluent::glyph(g::SAVE, 12.))
                         .child("Save")
-                        .tooltip(|w, cx| gpui_component::tooltip::Tooltip::new("Save the unprocessed recording as a WAV file").build(w, cx))
+                        .tooltip(|w, cx| {
+                            gpui_component::tooltip::Tooltip::new("Save the unprocessed recording as a WAV file")
+                                .build(w, cx)
+                        })
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_recording(cx))),
                 )
             })
@@ -1345,11 +1385,15 @@ impl MainView {
                     .border_1()
                     .border_color(p.control_stroke)
                     .when(!playing, |d| d.opacity(0.5))
-                    .child(segment("ab-a", "Processed", !self.ab_original).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_ab(false, cx))))
+                    .child(
+                        segment("ab-a", "Processed", !self.ab_original)
+                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_ab(false, cx))),
+                    )
                     .child(
                         segment("ab-b", "Original", self.ab_original)
                             .tooltip(|w, cx| {
-                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, matched in loudness").build(w, cx)
+                                gpui_component::tooltip::Tooltip::new("The unprocessed recording, matched in loudness")
+                                    .build(w, cx)
                             })
                             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 if playing {
@@ -1365,7 +1409,8 @@ impl MainView {
         let (text, color) = if path.is_empty() {
             ("Choose a .wav impulse response.".to_string(), p.text2)
         } else {
-            let name = std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+            let name =
+                std::path::Path::new(path).file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
             match engine::dsp::convolver::kernel(path, engine::SAMPLE_RATE as f32) {
                 Ok(k) => (
                     format!(
@@ -1386,33 +1431,32 @@ impl MainView {
             .gap(px(12.))
             .mb(px(8.))
             .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
-            .child(
-                fluent::button(("choose-ir", slot_id as usize), cx)
-                    .child("Choose file...")
-                    .on_click(cx.listener(move |_, _: &ClickEvent, window, cx| {
-                        let rx = cx.prompt_for_paths(PathPromptOptions {
-                            files: true,
-                            directories: false,
-                            multiple: false,
-                            prompt: Some("Choose".into()),
-                        });
-                        cx.spawn_in(window, async move |this, cx| {
-                            if let Ok(Ok(Some(paths))) = rx.await
-                                && let Some(path) = paths.into_iter().next() {
-                                    let _ = this.update(cx, |this, cx| {
-                                        this.edit_chain(cx, |c| {
-                                            if let Some(EffectSlot { effect: EffectConfig::Convolver(cv), .. }) =
-                                                c.slots.iter_mut().find(|s| s.id == slot_id)
-                                            {
-                                                cv.ir_path = path.to_string_lossy().into_owned();
-                                            }
-                                        })
-                                    });
-                                }
-                        })
-                        .detach();
-                    })),
-            )
+            .child(fluent::button(("choose-ir", slot_id as usize), cx).child("Choose file...").on_click(cx.listener(
+                move |_, _: &ClickEvent, window, cx| {
+                    let rx = cx.prompt_for_paths(PathPromptOptions {
+                        files: true,
+                        directories: false,
+                        multiple: false,
+                        prompt: Some("Choose".into()),
+                    });
+                    cx.spawn_in(window, async move |this, cx| {
+                        if let Ok(Ok(Some(paths))) = rx.await
+                            && let Some(path) = paths.into_iter().next()
+                        {
+                            let _ = this.update(cx, |this, cx| {
+                                this.edit_chain(cx, |c| {
+                                    if let Some(EffectSlot { effect: EffectConfig::Convolver(cv), .. }) =
+                                        c.slots.iter_mut().find(|s| s.id == slot_id)
+                                    {
+                                        cv.ir_path = path.to_string_lossy().into_owned();
+                                    }
+                                })
+                            });
+                        }
+                    })
+                    .detach();
+                },
+            )))
             .into_any_element()
     }
 
@@ -1536,7 +1580,11 @@ impl MainView {
                 "Active",
                 format!(
                     "{}, {}",
-                    if st.latency_ms < 0.5 { "no added latency".to_string() } else { format!("{:.0} ms latency", st.latency_ms) },
+                    if st.latency_ms < 0.5 {
+                        "no added latency".to_string()
+                    } else {
+                        format!("{:.0} ms latency", st.latency_ms)
+                    },
                     match dropouts {
                         0 => "no dropouts".to_string(),
                         1 => "1 dropout".to_string(),
@@ -1565,7 +1613,9 @@ impl MainView {
                 cx,
             )
             .into_any_element(),
-            RunState::Starting => fluent::info_bar(Severity::Info, "Starting", "Opening devices...".into(), cx).into_any_element(),
+            RunState::Starting => {
+                fluent::info_bar(Severity::Info, "Starting", "Opening devices...".into(), cx).into_any_element()
+            }
             RunState::Retrying => fluent::info_bar(
                 Severity::Error,
                 "Not running",
@@ -1602,8 +1652,14 @@ impl MainView {
             .rounded(px(6.))
             .border_1()
             .border_color(p.control_stroke)
-            .child(segment("out-cable", "Virtual cable", !direct).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_direct(false, cx))))
-            .child(segment("out-direct", "Direct", direct).on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_direct(true, cx))))
+            .child(
+                segment("out-cable", "Virtual cable", !direct)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_direct(false, cx))),
+            )
+            .child(
+                segment("out-direct", "Direct", direct)
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.set_direct(true, cx))),
+            )
     }
 
     fn render_sidebar(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1616,21 +1672,11 @@ impl MainView {
         // Device captions only appear when something is wrong.
         let input_caption = if self.status.input.is_some() { String::new() } else { "Not connected".into() };
         let header = |icon: AnyElement, title: &str, sub: String| {
-            div()
-                .flex()
-                .flex_row()
-                .items_center()
-                .gap(px(12.))
-                .child(icon)
-                .child(
-                    div()
-                        .flex()
-                        .flex_col()
-                        .flex_1()
-                        .min_w_0()
-                        .child(title.to_owned())
-                        .when(!sub.is_empty(), |d| d.child(div().text_xs().line_height(px(16.)).text_color(p.text2).child(sub))),
-                )
+            div().flex().flex_row().items_center().gap(px(12.)).child(icon).child(
+                div().flex().flex_col().flex_1().min_w_0().child(title.to_owned()).when(!sub.is_empty(), |d| {
+                    d.child(div().text_xs().line_height(px(16.)).text_color(p.text2).child(sub))
+                }),
+            )
         };
         let icon_glyph = |ch: char| fluent::glyph(ch, 20.).text_color(p.text).into_any_element();
         let plug = svg().path("winfx/plug.svg").size(px(20.)).flex_none().text_color(p.text).into_any_element();
@@ -1661,7 +1707,7 @@ impl MainView {
                         .child(if busy { "Listening..." } else { "Calibrate" })
                         .tooltip(|w, cx| {
                             gpui_component::tooltip::Tooltip::new(
-                                "Changes the first Gain effect and the Gate and Expander thresholds."
+                                "Changes the first Gain effect and the Gate and Expander thresholds.",
                             )
                             .build(w, cx)
                         })
@@ -1683,17 +1729,16 @@ impl MainView {
             .child(mic_calib_row)
             // Direct mode must share the input: exclusive capture would bypass the effects.
             .when(!direct, |d| {
-                d.child(
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .child("Exclusive mode")
-                        .child(fluent::switch("exclusive", exclusive, "Lower latency. Other apps can't use this device while WinFX is running.", cx, {
-                            let state = self.state.clone();
-                            move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_input = on))
-                        })),
-                )
+                d.child(div().flex().items_center().justify_between().child("Exclusive mode").child(fluent::switch(
+                    "exclusive",
+                    exclusive,
+                    "Lower latency. Other apps can't use this device while WinFX is running.",
+                    cx,
+                    {
+                        let state = self.state.clone();
+                        move |on, _, cx| state.update(cx, |s, _| s.set_engine_config(|c| c.exclusive_input = on))
+                    },
+                )))
             });
 
         let exclusive_out = s.config.engine.exclusive_output;
@@ -1721,16 +1766,26 @@ impl MainView {
             ),
         };
         let direct_card = {
-            let input_name = self.status.input.as_ref().map(|i| i.name.clone()).unwrap_or_else(|| "the input device".into());
-            let not_running = self.status.state == RunState::Running && self.status.direct.as_ref().is_some_and(|d| !d.active);
+            let input_name =
+                self.status.input.as_ref().map(|i| i.name.clone()).unwrap_or_else(|| "the input device".into());
+            let not_running =
+                self.status.state == RunState::Running && self.status.direct.as_ref().is_some_and(|d| !d.active);
             let (text, color, action): (String, gpui::Hsla, Option<(&'static str, bool)>) = if self.apo_busy {
                 ("Setting up. Approve the Windows prompt to continue.".into(), p.accent_text, None)
             } else if !self.apo.installed || !self.apo.attached {
                 ("Effects need a one-time setup on this device. Windows asks for permission, and audio restarts briefly.".into(), p.text2, Some(("Set up", true)))
             } else if self.apo.enhancements_off {
-                ("Audio enhancements are off for this device, so the effects can't run.".into(), p.caution, Some(("Turn on", false)))
+                (
+                    "Audio enhancements are off for this device, so the effects can't run.".into(),
+                    p.caution,
+                    Some(("Turn on", false)),
+                )
             } else if not_running {
-                ("The effects aren't running on this device. Setting up again restarts Windows audio.".into(), p.caution, Some(("Set up", true)))
+                (
+                    "The effects aren't running on this device. Setting up again restarts Windows audio.".into(),
+                    p.caution,
+                    Some(("Set up", true)),
+                )
             } else {
                 (format!("Apps use \"{input_name}\" directly."), p.text2, None)
             };
@@ -1744,7 +1799,11 @@ impl MainView {
                 .flex()
                 .flex_col()
                 .gap(px(12.))
-                .child(header(svg().path("winfx/plug.svg").size(px(20.)).flex_none().text_color(p.text).into_any_element(), "Output", String::new()))
+                .child(header(
+                    svg().path("winfx/plug.svg").size(px(20.)).flex_none().text_color(p.text).into_any_element(),
+                    "Output",
+                    String::new(),
+                ))
                 .child(self.render_output_mode(direct, cx))
                 .child(fluent::level_meter("Output level", self.levels.out_peak, self.levels.out_rms, cx))
                 .child(
@@ -1755,13 +1814,15 @@ impl MainView {
                         .gap(px(8.))
                         .child(div().flex_1().min_w_0().text_xs().line_height(px(16.)).text_color(color).child(text))
                         .children(action.map(|(label, setup)| {
-                            fluent::button("direct-action", cx).child(label).on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                if setup {
-                                    this.run_apo_setup(window, cx);
-                                } else {
-                                    this.turn_on_enhancements(cx);
-                                }
-                            }))
+                            fluent::button("direct-action", cx).child(label).on_click(cx.listener(
+                                move |this, _: &ClickEvent, window, cx| {
+                                    if setup {
+                                        this.run_apo_setup(window, cx);
+                                    } else {
+                                        this.turn_on_enhancements(cx);
+                                    }
+                                },
+                            ))
                         })),
                 )
                 .when_some(self.apo_error.clone(), |d, e| {
@@ -1837,18 +1898,16 @@ impl MainView {
             .flex()
             .flex_col()
             .gap(px(12.))
-            .child(
-                header(icon_glyph(g::HEADPHONE), "Monitor", mon_caption).child(fluent::switch(
-                    "monitor",
-                    mon.enabled,
-                    "",
-                    cx,
-                    {
-                        let state = self.state.clone();
-                        move |on, _, cx| state.update(cx, |s, _| s.set_monitor(|m| m.enabled = on))
-                    },
-                )),
-            )
+            .child(header(icon_glyph(g::HEADPHONE), "Monitor", mon_caption).child(fluent::switch(
+                "monitor",
+                mon.enabled,
+                "",
+                cx,
+                {
+                    let state = self.state.clone();
+                    move |on, _, cx| state.update(cx, |s, _| s.set_monitor(|m| m.enabled = on))
+                },
+            )))
             .when(mon.enabled, |d| {
                 d.child(Select::new(&self.monitor_sel).placeholder("Choose a device")).child(
                     div()
@@ -2129,7 +2188,10 @@ impl MainView {
                         let (w, h) = (f32::from(b.size.width), f32::from(b.size.height));
                         for f in [50.0, 100.0, 200.0, 500.0, 1000.0, 2000.0, 5000.0, 10_000.0] {
                             let x = b.origin.x + px(eq_x(f) * w);
-                            window.paint_quad(fill(Bounds { origin: point(x, b.origin.y), size: size(px(1.), b.size.height) }, grid));
+                            window.paint_quad(fill(
+                                Bounds { origin: point(x, b.origin.y), size: size(px(1.), b.size.height) },
+                                grid,
+                            ));
                         }
                         for d in [-6.0, 0.0, 6.0] {
                             let y = b.origin.y + px(eq_y(d, h));
@@ -2153,12 +2215,18 @@ impl MainView {
                         }
                         let mut sl = PathBuilder::stroke(px(1.));
                         for (i, db) in spectrum.iter().enumerate() {
-                            if i == 0 { sl.move_to(point(col_x(i), spec_y(*db))) } else { sl.line_to(point(col_x(i), spec_y(*db))) }
+                            if i == 0 {
+                                sl.move_to(point(col_x(i), spec_y(*db)))
+                            } else {
+                                sl.line_to(point(col_x(i), spec_y(*db)))
+                            }
                         }
                         if let Ok(path) = sl.build() {
                             window.paint_path(path, spec_line);
                         }
-                        let pt = |i: usize, db: f32| point(b.origin.x + px(i as f32 / (N - 1) as f32 * w), b.origin.y + px(eq_y(db, h)));
+                        let pt = |i: usize, db: f32| {
+                            point(b.origin.x + px(i as f32 / (N - 1) as f32 * w), b.origin.y + px(eq_y(db, h)))
+                        };
                         let mut area = PathBuilder::fill();
                         area.move_to(point(b.origin.x, b.origin.y + px(h / 2.0)));
                         for (i, db) in curve.iter().enumerate() {
@@ -2204,86 +2272,104 @@ impl MainView {
                     .when(selected, |d| d.child((i + 1).to_string()))
             }))
             .children([(6.0, "+6"), (0.0, "0 dB"), (-6.0, "-6")].map(|(db, t)| {
-                div().absolute().left(px(6.)).top(px(eq_y(db, EQ_H) - 14.)).text_size(px(10.)).line_height(px(12.)).text_color(p.text3).child(t)
+                div()
+                    .absolute()
+                    .left(px(6.))
+                    .top(px(eq_y(db, EQ_H) - 14.))
+                    .text_size(px(10.))
+                    .line_height(px(12.))
+                    .text_color(p.text3)
+                    .child(t)
             }))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, ev: &MouseDownEvent, window, cx| this.eq_mouse_down(ev.position, window, cx)))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, ev: &MouseDownEvent, window, cx| this.eq_mouse_down(ev.position, window, cx)),
+            )
             .on_mouse_move(cx.listener(|this, ev: &MouseMoveEvent, window, cx| this.eq_mouse_move(ev, window, cx)))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                this.eq.drag = None;
-                cx.notify();
-            }))
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                    this.eq.drag = None;
+                    cx.notify();
+                }),
+            )
             .on_mouse_up_out(MouseButton::Left, cx.listener(|this, _: &MouseUpEvent, _, _| this.eq.drag = None))
             .on_scroll(cx.listener(|this, ev: &ScrollEvent, window, cx| this.eq_scroll(ev, window, cx)));
 
-        let axis = div()
-            .relative()
-            .h(px(12.))
-            .text_size(px(10.))
-            .line_height(px(12.))
-            .text_color(p.text3)
-            .children([(50.0, "50"), (100.0, "100"), (200.0, "200"), (500.0, "500"), (1000.0, "1k"), (2000.0, "2k"), (5000.0, "5k"), (10_000.0, "10k")].map(|(f, t)| {
-                div().absolute().top_0().left(relative(eq_x(f))).ml(px(-8.)).child(t)
-            }));
+        let axis = div().relative().h(px(12.)).text_size(px(10.)).line_height(px(12.)).text_color(p.text3).children(
+            [
+                (50.0, "50"),
+                (100.0, "100"),
+                (200.0, "200"),
+                (500.0, "500"),
+                (1000.0, "1k"),
+                (2000.0, "2k"),
+                (5000.0, "5k"),
+                (10_000.0, "10k"),
+            ]
+            .map(|(f, t)| div().absolute().top_0().left(relative(eq_x(f))).ml(px(-8.)).child(t)),
+        );
 
         let cols = eq.bands.len().clamp(1, 8) as u16;
-        let tiles = div()
-            .grid()
-            .grid_cols(cols)
-            .gap(px(8.))
-            .children(eq.bands.iter().enumerate().map(|(i, b)| {
-                let selected = i == sel;
-                let row = |k: &str, v: String| {
-                    div().flex().justify_between().text_color(p.text2).child(k.to_owned()).child(div().text_color(p.text).child(v))
-                };
-                let gain = if b.kind.has_gain() { params::format(params::Unit::Db, b.gain_db) } else { "-".to_string() };
+        let tiles = div().grid().grid_cols(cols).gap(px(8.)).children(eq.bands.iter().enumerate().map(|(i, b)| {
+            let selected = i == sel;
+            let row = |k: &str, v: String| {
                 div()
-                    .id(("band", i))
-                    .min_w_0()
-                    .when(!b.enabled, |d| d.opacity(0.55))
                     .flex()
-                    .flex_col()
-                    .gap(px(6.))
-                    .p(px(10.))
-                    .rounded(px(6.))
-                    .border_1()
-                    .border_color(if selected { p.accent } else { p.stroke })
-                    .bg(if selected { p.accent_fill } else { p.control })
-                    .hover(|s| s.border_color(p.accent))
-                    .cursor_pointer()
-                    .text_xs()
-                    .line_height(px(16.))
-                    .child(
-                        div()
-                            .flex()
-                            .items_center()
-                            .gap(px(6.))
-                            .child(
-                                div()
-                                    .size(px(16.))
-                                    .rounded_full()
-                                    .bg(if selected { p.accent } else { p.meter_track })
-                                    .text_color(if selected { p.on_accent } else { p.text })
-                                    .text_size(px(10.))
-                                    .flex()
-                                    .items_center()
-                                    .justify_center()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .child((i + 1).to_string()),
-                            )
-                            .child(
-                                div()
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
-                                    .whitespace_nowrap()
-                                    .overflow_hidden()
-                                    .text_ellipsis()
-                                    .child(if b.enabled { params::band_name(b) } else { "Off" }),
-                            ),
-                    )
-                    .child(row("Freq", params::format(params::Unit::Hz, b.freq_hz)))
-                    .child(row("Gain", gain))
-                    .child(row("Q", format!("{:.2}", b.q)))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.select_band(i, window, cx)))
-            }));
+                    .justify_between()
+                    .text_color(p.text2)
+                    .child(k.to_owned())
+                    .child(div().text_color(p.text).child(v))
+            };
+            let gain = if b.kind.has_gain() { params::format(params::Unit::Db, b.gain_db) } else { "-".to_string() };
+            div()
+                .id(("band", i))
+                .min_w_0()
+                .when(!b.enabled, |d| d.opacity(0.55))
+                .flex()
+                .flex_col()
+                .gap(px(6.))
+                .p(px(10.))
+                .rounded(px(6.))
+                .border_1()
+                .border_color(if selected { p.accent } else { p.stroke })
+                .bg(if selected { p.accent_fill } else { p.control })
+                .hover(|s| s.border_color(p.accent))
+                .cursor_pointer()
+                .text_xs()
+                .line_height(px(16.))
+                .child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap(px(6.))
+                        .child(
+                            div()
+                                .size(px(16.))
+                                .rounded_full()
+                                .bg(if selected { p.accent } else { p.meter_track })
+                                .text_color(if selected { p.on_accent } else { p.text })
+                                .text_size(px(10.))
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .child((i + 1).to_string()),
+                        )
+                        .child(
+                            div()
+                                .font_weight(gpui::FontWeight::SEMIBOLD)
+                                .whitespace_nowrap()
+                                .overflow_hidden()
+                                .text_ellipsis()
+                                .child(if b.enabled { params::band_name(b) } else { "Off" }),
+                        ),
+                )
+                .child(row("Freq", params::format(params::Unit::Hz, b.freq_hz)))
+                .child(row("Gain", gain))
+                .child(row("Q", format!("{:.2}", b.q)))
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| this.select_band(i, window, cx)))
+        }));
 
         let band_on = eq.bands.get(sel).is_some_and(|b| b.enabled);
         let band_bar = div()
@@ -2329,11 +2415,7 @@ impl MainView {
             .children(self.eq.ctls.iter().map(|c| slider_row(c, params::get(&slot.effect, c.spec.key), cx)));
 
         let output = self.eq.gain_ctl.as_ref().map(|c| {
-            div()
-                .grid()
-                .grid_cols(4)
-                .gap_x(px(32.))
-                .child(slider_row(c, params::get(&slot.effect, c.spec.key), cx))
+            div().grid().grid_cols(4).gap_x(px(32.)).child(slider_row(c, params::get(&slot.effect, c.spec.key), cx))
         });
 
         div()
@@ -2350,7 +2432,14 @@ impl MainView {
             .into_any_element()
     }
 
-    fn render_card(&self, ix: usize, card: &Card, slot: &EffectSlot, chain: &ChainConfig, cx: &mut Context<Self>) -> AnyElement {
+    fn render_card(
+        &self,
+        ix: usize,
+        card: &Card,
+        slot: &EffectSlot,
+        chain: &ChainConfig,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let p = fl(cx).clone();
         let id = card.id;
         let title: SharedString = params::title(&slot.effect).into();
@@ -2412,15 +2501,11 @@ impl MainView {
             )
             .when(matches!(slot.effect, EffectConfig::Autotune(_)) && on, |d| {
                 let hz = self.levels.aux.get(ix).copied().unwrap_or(0.0);
-                d.child(
-                    div()
-                        .w(px(132.))
-                        .flex_none()
-                        .text_xs()
-                        .text_right()
-                        .text_color(p.text2)
-                        .child(if hz > 0.0 { format!("Pitch {}", params::note_name(hz)) } else { "No pitch".into() }),
-                )
+                d.child(div().w(px(132.)).flex_none().text_xs().text_right().text_color(p.text2).child(if hz > 0.0 {
+                    format!("Pitch {}", params::note_name(hz))
+                } else {
+                    "No pitch".into()
+                }))
             })
             .when(matches!(slot.effect, EffectConfig::Autogain(_)) && on, |d| {
                 let g = self.levels.aux.get(ix).copied().unwrap_or(0.0);
@@ -2450,16 +2535,21 @@ impl MainView {
                                 .rounded_full()
                                 .overflow_hidden()
                                 .bg(p.meter_track)
-                                .child(div().absolute().top_0().right_0().h_full().w(relative((gr / 24.0).clamp(0.0, 1.0))).bg(p.caution)),
+                                .child(
+                                    div()
+                                        .absolute()
+                                        .top_0()
+                                        .right_0()
+                                        .h_full()
+                                        .w(relative((gr / 24.0).clamp(0.0, 1.0)))
+                                        .bg(p.caution),
+                                ),
                         )
-                        .child(
-                            div()
-                                .w(px(52.))
-                                .text_xs()
-                                .text_right()
-                                .text_color(p.text2)
-                                .child(if gr < 0.05 { "0.0 dB".to_string() } else { format!("-{gr:.1} dB") }),
-                        ),
+                        .child(div().w(px(52.)).text_xs().text_right().text_color(p.text2).child(if gr < 0.05 {
+                            "0.0 dB".to_string()
+                        } else {
+                            format!("-{gr:.1} dB")
+                        })),
                 )
             })
             .child(div().w(px(24.)).text_xs().text_right().text_color(p.text2).child(if on { "On" } else { "Off" }))
@@ -2509,14 +2599,9 @@ impl MainView {
                         |d, c| d.child(transfer_curve(&c, cx)),
                     )
                     .child(
-                        div()
-                            .flex_1()
-                            .min_w(px(320.))
-                            .grid()
-                            .grid_cols(2)
-                            .gap_x(px(32.))
-                            .gap_y(px(14.))
-                            .children(card.params.iter().map(|c| slider_row(c, params::get(&slot.effect, c.spec.key), cx))),
+                        div().flex_1().min_w(px(320.)).grid().grid_cols(2).gap_x(px(32.)).gap_y(px(14.)).children(
+                            card.params.iter().map(|c| slider_row(c, params::get(&slot.effect, c.spec.key), cx)),
+                        ),
                     )
                     .into_any_element(),
             };
@@ -2578,11 +2663,10 @@ fn popover(cx: &App) -> gpui::Div {
 }
 
 fn anchor_below(menu: gpui::Div) -> impl IntoElement {
-    div()
-        .absolute()
-        .top(px(36.))
-        .right_0()
-        .child(deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu.occlude())).with_priority(1))
+    div().absolute().top(px(36.)).right_0().child(
+        deferred(anchored().anchor(Anchor::TopRight).snap_to_window_with_margin(px(8.)).child(menu.occlude()))
+            .with_priority(1),
+    )
 }
 
 impl Render for MainView {
@@ -2622,42 +2706,36 @@ impl Render for MainView {
             }))
             .child(title_bar)
             .child(
-                div()
-                    .flex_1()
-                    .min_h_0()
-                    .flex()
-                    .flex_row()
-                    .child(sidebar)
-                    .child(
-                        div().flex_1().min_w_0().h_full().child(
-                            div()
-                                .id("chain")
-                                .size_full()
-                                .child(
-                                    div()
-                                        .flex()
-                                        .flex_col()
-                                        .gap(px(8.))
-                                        .pl(px(12.))
-                                        .pr(px(24.))
-                                        .pt(px(4.))
-                                        .pb(px(24.))
-                                        .child(header)
-                                        .children(notices)
-                                        .child(audition)
-                                        .children(cards)
-                                        .when(empty, |d| {
-                                            d.child(
-                                                fluent::card(cx)
-                                                    .p(px(24.))
-                                                    .text_color(p.text2)
-                                                    .child("No effects yet. Select Add effect to build a chain."),
-                                            )
-                                        }),
-                                )
-                                .overflow_y_scrollbar(),
-                        ),
+                div().flex_1().min_h_0().flex().flex_row().child(sidebar).child(
+                    div().flex_1().min_w_0().h_full().child(
+                        div()
+                            .id("chain")
+                            .size_full()
+                            .child(
+                                div()
+                                    .flex()
+                                    .flex_col()
+                                    .gap(px(8.))
+                                    .pl(px(12.))
+                                    .pr(px(24.))
+                                    .pt(px(4.))
+                                    .pb(px(24.))
+                                    .child(header)
+                                    .children(notices)
+                                    .child(audition)
+                                    .children(cards)
+                                    .when(empty, |d| {
+                                        d.child(
+                                            fluent::card(cx)
+                                                .p(px(24.))
+                                                .text_color(p.text2)
+                                                .child("No effects yet. Select Add effect to build a chain."),
+                                        )
+                                    }),
+                            )
+                            .overflow_y_scrollbar(),
                     ),
+                ),
             )
     }
 }

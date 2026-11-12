@@ -1,7 +1,7 @@
 //! Maximizer: push the level up by `-threshold` dB into a look-ahead peak
 //! limiter, so the voice gets louder and denser without clipping.
 
-use super::{db_to_lin, Limiter, LimiterParams};
+use super::{Limiter, LimiterParams, db_to_lin};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

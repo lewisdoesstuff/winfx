@@ -14,14 +14,13 @@ pub mod import;
 pub mod meters;
 pub mod resample;
 pub mod shared;
+mod stream;
 pub mod tap;
 pub mod wav;
-mod stream;
 
 pub use chain::{Chain, ChainConfig, EffectConfig, EffectSlot};
 pub use engine::{
-    DeviceSel, Engine, EngineConfig, InputChannel, LatencyTest, MonitorConfig, RunState, Status,
-    StreamInfo,
+    DeviceSel, Engine, EngineConfig, InputChannel, LatencyTest, MonitorConfig, RunState, Status, StreamInfo,
 };
 pub use meters::Meters;
 

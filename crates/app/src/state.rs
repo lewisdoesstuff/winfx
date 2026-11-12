@@ -68,16 +68,10 @@ pub fn is_cable(d: &DeviceInfo) -> bool {
 
 impl AppState {
     pub fn load(preview: bool) -> Self {
-        let saved: Option<AppConfig> = std::fs::read_to_string(config_path())
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok());
+        let saved: Option<AppConfig> =
+            std::fs::read_to_string(config_path()).ok().and_then(|s| serde_json::from_str(&s).ok());
         let first_run = saved.is_none();
-        let mut config =
-            saved.unwrap_or(AppConfig {
-            engine: EngineConfig::default(),
-            preset: None,
-            window: None,
-        });
+        let mut config = saved.unwrap_or(AppConfig { engine: EngineConfig::default(), preset: None, window: None });
         let first_run = first_run && !preview;
         // Dev aid for screenshots: preview direct mode without touching the saved config.
         if preview && std::env::var_os("WINFX_DIRECT").is_some() {
@@ -95,22 +89,23 @@ impl AppState {
             outputs: vec![],
             presets: vec![],
             preview,
-            pending_import: std::env::args_os()
-                .skip(1)
-                .map(PathBuf::from)
-                .find(|p| p.is_file() && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json") || e.eq_ignore_ascii_case("txt"))),
+            pending_import: std::env::args_os().skip(1).map(PathBuf::from).find(|p| {
+                p.is_file()
+                    && p.extension().is_some_and(|e| e.eq_ignore_ascii_case("json") || e.eq_ignore_ascii_case("txt"))
+            }),
             dirty_since: None,
         };
         s.refresh_devices();
         s.refresh_presets();
 
         if (first_run || config.engine.input == DeviceSel::Default)
-            && let Some(mic) = s.guess_mic() {
-                config.engine.input = DeviceSel::device(&mic);
-                s.config = config;
-                s.engine.set_config(s.config.engine.clone());
-                s.save();
-            }
+            && let Some(mic) = s.guess_mic()
+        {
+            config.engine.input = DeviceSel::device(&mic);
+            s.config = config;
+            s.engine.set_config(s.config.engine.clone());
+            s.save();
+        }
         if first_run {
             let _ = std::fs::create_dir_all(presets_dir());
             if s.presets.is_empty() {
@@ -247,7 +242,7 @@ impl AppState {
     /// Import an EasyEffects preset (becomes a new preset, then loaded) or an
     /// Equalizer APO / AutoEQ file (replaces the EQ in the current chain).
     pub fn import_file(&mut self, path: &std::path::Path) -> Result<ImportOutcome, String> {
-        use engine::import::{import, Imported};
+        use engine::import::{Imported, import};
         let text = std::fs::read_to_string(path).map_err(|e| format!("couldn't read the file: {e}"))?;
         let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "Imported".into());
         match import(&text)? {
@@ -275,7 +270,9 @@ impl AppState {
                             .iter()
                             .position(|s| !matches!(s.effect, engine::EffectConfig::Filter(_)))
                             .unwrap_or(chain.slots.len());
-                        chain.slots.insert(at, engine::EffectSlot { id, bypass: false, effect: engine::EffectConfig::Eq(eq) });
+                        chain
+                            .slots
+                            .insert(at, engine::EffectSlot { id, bypass: false, effect: engine::EffectConfig::Eq(eq) });
                     }
                 }
                 self.set_chain(chain);
@@ -316,10 +313,7 @@ impl ImportOutcome {
 }
 
 fn sanitize(name: &str) -> String {
-    let s: String = name
-        .chars()
-        .map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' })
-        .collect();
+    let s: String = name.chars().map(|c| if c.is_alphanumeric() || " -_()".contains(c) { c } else { '_' }).collect();
     let s = s.trim().to_owned();
     if s.is_empty() { "Preset".into() } else { s }
 }

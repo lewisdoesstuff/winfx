@@ -4,9 +4,8 @@
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    div, px, rgb, rgba, App, Div, ElementId, Global, Hsla, InteractiveElement as _,
-    ParentElement as _, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _, Window,
-    WindowAppearance,
+    App, Div, ElementId, Global, Hsla, InteractiveElement as _, ParentElement as _, SharedString, Stateful,
+    StatefulInteractiveElement as _, Styled as _, Window, WindowAppearance, div, px, rgb, rgba,
 };
 use gpui_component::{Theme, ThemeMode};
 
@@ -91,8 +90,8 @@ fn ca(hex: u32, a: f32) -> Hsla {
 
 /// Windows' accent palette (light3, light2, light1, base, dark1, dark2, dark3, …).
 fn system_accent() -> [u32; 8] {
+    use windows::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_BINARY, RegGetValueW};
     use windows::core::w;
-    use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
     let mut buf = [0u8; 32];
     let mut len = buf.len() as u32;
     let ok = unsafe {
@@ -280,12 +279,7 @@ fn apply(dark: bool, cx: &mut App) {
 // ---------- building blocks ----------
 
 pub fn glyph(ch: char, size: f32) -> Div {
-    div()
-        .font_family(ICON_FONT)
-        .text_size(px(size))
-        .line_height(px(size))
-        .flex_none()
-        .child(ch.to_string())
+    div().font_family(ICON_FONT).text_size(px(size)).line_height(px(size)).flex_none().child(ch.to_string())
 }
 
 pub fn card(cx: &App) -> Div {
@@ -298,12 +292,7 @@ pub fn caption(text: impl Into<SharedString>, cx: &App) -> Div {
 }
 
 pub fn section_title(text: &'static str, cx: &App) -> Div {
-    div()
-        .mt(px(16.))
-        .mb(px(4.))
-        .font_weight(gpui::FontWeight::SEMIBOLD)
-        .text_color(fl(cx).text)
-        .child(text)
+    div().mt(px(16.)).mb(px(4.)).font_weight(gpui::FontWeight::SEMIBOLD).text_color(fl(cx).text).child(text)
 }
 
 /// Fluent toggle switch (40×20).
@@ -334,15 +323,7 @@ pub fn switch(
             let label: SharedString = label.to_owned().into();
             d.tooltip(move |w, cx| gpui_component::tooltip::Tooltip::new(label.clone()).build(w, cx))
         })
-        .child(
-            div()
-                .absolute()
-                .top(px(3.))
-                .left(px(if on { 23. } else { 3. }))
-                .size(px(12.))
-                .rounded_full()
-                .bg(knob),
-        )
+        .child(div().absolute().top(px(3.)).left(px(if on { 23. } else { 3. })).size(px(12.)).rounded_full().bg(knob))
         .on_click(move |_, w, cx| on_toggle(!on, w, cx))
 }
 
@@ -402,7 +383,13 @@ fn meter_frac(db: f32) -> f32 {
 /// Horizontal level meter with a dB scale.
 pub fn level_meter(label: &str, peak: f32, rms: f32, cx: &App) -> Div {
     let p = fl(cx);
-    let peak_color = if peak > -3.0 { p.critical } else if peak > -9.0 { p.caution } else { p.accent };
+    let peak_color = if peak > -3.0 {
+        p.critical
+    } else if peak > -9.0 {
+        p.caution
+    } else {
+        p.accent
+    };
     let ticks = [(-60.0, "-60"), (-40.0, "-40"), (-20.0, "-20"), (-6.0, "-6"), (0.0, "0")];
     div()
         .flex()
@@ -425,26 +412,31 @@ pub fn level_meter(label: &str, peak: f32, rms: f32, cx: &App) -> Div {
                 .rounded_full()
                 .overflow_hidden()
                 .bg(p.meter_track)
-                .child(div().absolute().top_0().left_0().h_full().rounded_full().w(gpui::relative(meter_frac(rms))).bg(p.accent))
-                .child(div().absolute().top_0().h_full().w(px(2.)).left(gpui::relative(meter_frac(peak))).bg(peak_color)),
-        )
-        .child(
-            div()
-                .relative()
-                .h(px(12.))
-                .text_size(px(10.))
-                .line_height(px(12.))
-                .text_color(p.text3)
-                .children(ticks.into_iter().map(|(db, t)| {
-                    let x = meter_frac(db);
+                .child(
                     div()
                         .absolute()
                         .top_0()
-                        .when(x < 0.99, |d| d.left(gpui::relative(x)))
-                        .when(x >= 0.99, |d| d.right_0())
-                        .child(t)
-                })),
+                        .left_0()
+                        .h_full()
+                        .rounded_full()
+                        .w(gpui::relative(meter_frac(rms)))
+                        .bg(p.accent),
+                )
+                .child(
+                    div().absolute().top_0().h_full().w(px(2.)).left(gpui::relative(meter_frac(peak))).bg(peak_color),
+                ),
         )
+        .child(div().relative().h(px(12.)).text_size(px(10.)).line_height(px(12.)).text_color(p.text3).children(
+            ticks.into_iter().map(|(db, t)| {
+                let x = meter_frac(db);
+                div()
+                    .absolute()
+                    .top_0()
+                    .when(x < 0.99, |d| d.left(gpui::relative(x)))
+                    .when(x >= 0.99, |d| d.right_0())
+                    .child(t)
+            }),
+        ))
 }
 
 #[derive(Clone, Copy)]
@@ -477,17 +469,14 @@ pub fn info_bar(sev: Severity, title: &str, message: String, cx: &App) -> Div {
         .border_color(p.stroke)
         .child(glyph(icon, 16.).mt(px(2.)).text_color(fg))
         .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .child(
-                    div()
-                        .flex()
-                        .flex_wrap()
-                        .gap_x(px(6.))
-                        .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title.to_owned()))
-                        // Grows into the rest of the row and wraps; drops below the title when narrow.
-                        .child(div().flex_1().min_w(px(240.)).text_color(p.text).child(message)),
-                ),
+            div().flex_1().min_w_0().child(
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap_x(px(6.))
+                    .child(div().font_weight(gpui::FontWeight::SEMIBOLD).child(title.to_owned()))
+                    // Grows into the rest of the row and wraps; drops below the title when narrow.
+                    .child(div().flex_1().min_w(px(240.)).text_color(p.text).child(message)),
+            ),
         )
 }

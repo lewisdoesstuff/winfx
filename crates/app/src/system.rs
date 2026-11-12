@@ -2,14 +2,14 @@
 
 use tray_icon::menu::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, HANDLE, WAIT_OBJECT_0};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, WAIT_OBJECT_0};
 use windows::Win32::System::Registry::{
-    RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ,
+    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows::Win32::System::Threading::{
-    CreateEventW, CreateMutexW, OpenEventW, SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE,
+    CreateEventW, CreateMutexW, EVENT_MODIFY_STATE, OpenEventW, SetEvent, WaitForSingleObject,
 };
-use windows::core::{w, PCWSTR};
+use windows::core::{PCWSTR, w};
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
 const RUN_VALUE: PCWSTR = w!("WinFX");
@@ -24,10 +24,7 @@ pub fn claim_single_instance(name: &str) -> bool {
 
 pub fn autostart_enabled() -> bool {
     let mut size = 0u32;
-    unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ, None, None, Some(&mut size))
-            .is_ok()
-    }
+    unsafe { RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, RUN_VALUE, RRF_RT_REG_SZ, None, None, Some(&mut size)).is_ok() }
 }
 
 pub fn set_autostart(on: bool) -> bool {
@@ -136,7 +133,8 @@ fn make_icon() -> Icon {
             // capsule: |x| ≤ 4, y in [-9, 3] with round ends
             let cy = fy.clamp(-6.0, 0.0);
             let cap = 4.5 - (fx * fx + (fy - cy) * (fy - cy)).sqrt();
-            let stand = (fx.abs() <= 1.0 && (5.0..=9.0).contains(&fy)) || (fx.abs() <= 5.0 && (9.0..=10.5).contains(&fy));
+            let stand =
+                (fx.abs() <= 1.0 && (5.0..=9.0).contains(&fy)) || (fx.abs() <= 5.0 && (9.0..=10.5).contains(&fy));
             let i = (y * N + x) * 4;
             if disc > 0.0 {
                 let a = (disc.min(1.0) * 255.0) as u8;
@@ -185,7 +183,7 @@ pub fn run_admin_command() -> Option<i32> {
 pub fn run_elevated(args: &str) -> Result<String, String> {
     use windows::Win32::Foundation::ERROR_CANCELLED;
     use windows::Win32::System::Threading::{GetExitCodeProcess, INFINITE};
-    use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
+    use windows::Win32::UI::Shell::{SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW, ShellExecuteExW};
     use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;

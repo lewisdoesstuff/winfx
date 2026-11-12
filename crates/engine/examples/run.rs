@@ -14,9 +14,7 @@ use std::time::{Duration, Instant};
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let get = |flag: &str| {
-        args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
-    };
+    let get = |flag: &str| args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned();
 
     if args.iter().any(|a| a == "--list") {
         list();
@@ -92,7 +90,13 @@ fn main() {
                             s.device_rate,
                             s.period_frames,
                             s.period_frames as f32 / 48.0,
-                            if s.exclusive { ", EXCLUSIVE" } else if s.low_latency { ", low-latency" } else { "" },
+                            if s.exclusive {
+                                ", EXCLUSIVE"
+                            } else if s.low_latency {
+                                ", low-latency"
+                            } else {
+                                ""
+                            },
                             s.stream_latency_ms
                         );
                         if let Some(why) = &s.exclusive_fallback {
@@ -110,8 +114,11 @@ fn main() {
         }
         if st.latency_test != last_test {
             last_test = st.latency_test.clone();
-            println!("
-latency test: {:?}", st.latency_test);
+            println!(
+                "
+latency test: {:?}",
+                st.latency_test
+            );
         }
         if st.state == RunState::Running {
             let m = engine.meters();
@@ -134,7 +141,9 @@ latency test: {:?}", st.latency_test);
                 None => String::new(),
             };
             let mon = match (&st.monitor, &st.monitor_error) {
-                (Some(_), _) => format!(" | mon ~{:.0} ms xrun {}", st.monitor_latency_ms, m.monitor_underruns.load(Relaxed)),
+                (Some(_), _) => {
+                    format!(" | mon ~{:.0} ms xrun {}", st.monitor_latency_ms, m.monitor_underruns.load(Relaxed))
+                }
                 (None, Some(e)) => format!(" | mon ERR {e}"),
                 _ => String::new(),
             };

@@ -10,8 +10,8 @@ mod system;
 mod ui;
 
 use gpui::{
-    point, px, size, App, AppContext as _, Bounds, Entity, Global, QuitMode, TitlebarOptions,
-    Window, WindowBackgroundAppearance, WindowBounds, WindowHandle, WindowOptions,
+    App, AppContext as _, Bounds, Entity, Global, QuitMode, TitlebarOptions, Window, WindowBackgroundAppearance,
+    WindowBounds, WindowHandle, WindowOptions, point, px, size,
 };
 use gpui_component::Root;
 use state::AppState;
@@ -47,10 +47,8 @@ fn main() {
         log::line(&format!("WinFX {} starting", env!("CARGO_PKG_VERSION")));
     }
 
-    gpui_platform::application()
-        .with_assets(assets::Assets)
-        .with_quit_mode(QuitMode::Explicit)
-        .run(move |cx: &mut App| {
+    gpui_platform::application().with_assets(assets::Assets).with_quit_mode(QuitMode::Explicit).run(
+        move |cx: &mut App| {
             gpui_component::init(cx);
             fluent::sync_app(cx);
 
@@ -88,36 +86,39 @@ fn main() {
             let show_event = system::create_show_event();
             // Runs whether or not the window is open (it isn't with --hidden).
             let mut last_status = engine::Status::default();
-            cx.spawn(async move |cx| loop {
-                cx.background_executor().timer(Duration::from_millis(100)).await;
-                if !preview {
-                    let status = cx.update(|cx| cx.global::<AppGlobal>().state.read(cx).engine.status());
-                    log::status_changes(&last_status, &status);
-                    last_status = status;
-                }
-                let mut actions = cx.update(|cx| {
-                    cx.global::<AppGlobal>().tray.as_ref().map(|t| t.poll()).unwrap_or_default()
-                });
-                if show_event.as_ref().is_some_and(|e| e.take()) {
-                    actions.push(TrayAction::Show);
-                }
-                for a in actions {
-                    cx.update(|cx| match a {
-                        TrayAction::Show => open_main_window(cx),
-                        TrayAction::ToggleBypass => toggle_bypass_all(cx),
-                        TrayAction::Quit => quit(cx),
-                    });
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor().timer(Duration::from_millis(100)).await;
+                    if !preview {
+                        let status = cx.update(|cx| cx.global::<AppGlobal>().state.read(cx).engine.status());
+                        log::status_changes(&last_status, &status);
+                        last_status = status;
+                    }
+                    let mut actions =
+                        cx.update(|cx| cx.global::<AppGlobal>().tray.as_ref().map(|t| t.poll()).unwrap_or_default());
+                    if show_event.as_ref().is_some_and(|e| e.take()) {
+                        actions.push(TrayAction::Show);
+                    }
+                    for a in actions {
+                        cx.update(|cx| match a {
+                            TrayAction::Show => open_main_window(cx),
+                            TrayAction::ToggleBypass => toggle_bypass_all(cx),
+                            TrayAction::Quit => quit(cx),
+                        });
+                    }
                 }
             })
             .detach();
-        });
+        },
+    );
 }
 
 fn open_main_window(cx: &mut App) {
     if let Some(h) = cx.global::<AppGlobal>().window
-        && h.update(cx, |_, window, _| window.activate_window()).is_ok() {
-            return;
-        }
+        && h.update(cx, |_, window, _| window.activate_window()).is_ok()
+    {
+        return;
+    }
     let state = cx.global::<AppGlobal>().state.clone();
     let preview = cx.global::<AppGlobal>().preview;
     // Dev aid: WINFX_OFFSCREEN=1 opens the real app off-screen without focus, for screenshots.
@@ -131,7 +132,11 @@ fn open_main_window(cx: &mut App) {
     };
     let opts = WindowOptions {
         window_bounds: Some(bounds),
-        titlebar: Some(TitlebarOptions { title: Some("WinFX".into()), appears_transparent: true, ..Default::default() }),
+        titlebar: Some(TitlebarOptions {
+            title: Some("WinFX".into()),
+            appears_transparent: true,
+            ..Default::default()
+        }),
         window_background: WindowBackgroundAppearance::MicaBackdrop,
         window_min_size: Some(size(px(960.), px(600.))),
         focus: !offscreen,

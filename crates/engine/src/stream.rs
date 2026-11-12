@@ -8,15 +8,13 @@
 use crate::chain::Chain;
 use crate::devices::ensure_com;
 use crate::engine::{InputChannel, StreamInfo};
-use crate::meters::{block_levels, Meters};
+use crate::meters::{Meters, block_levels};
 use crate::resample::DriftResampler;
 use crate::{Error, Result, SAMPLE_RATE};
 use rtrb::{Consumer, Producer};
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering::Relaxed};
-use std::sync::{mpsc, Arc, Mutex};
-use wasapi::{
-    AudioClient, Device, DeviceEnumerator, Direction, SampleType, StreamMode, TimingMode, WaveFormat,
-};
+use std::sync::{Arc, Mutex, mpsc};
+use wasapi::{AudioClient, Device, DeviceEnumerator, Direction, SampleType, StreamMode, TimingMode, WaveFormat};
 
 /// How long a wait for a device event may take before we count it as a stall.
 const EVENT_TIMEOUT_MS: u32 = 200;
@@ -170,10 +168,7 @@ fn open_exclusive(device: &Device, dir: Direction) -> Result<Opened> {
         low_latency: true,
         exclusive: true,
         exclusive_fallback: None,
-        stream_latency_ms: client
-            .get_stream_latency()
-            .map(|hns| hns as f32 / 10_000.0)
-            .unwrap_or(0.0),
+        stream_latency_ms: client.get_stream_latency().map(|hns| hns as f32 / 10_000.0).unwrap_or(0.0),
     };
     Ok(Opened { client, format, sample, channels, period_frames, info })
 }
@@ -181,9 +176,7 @@ fn open_exclusive(device: &Device, dir: Direction) -> Result<Opened> {
 fn get_device(id: Option<&str>, dir: Direction) -> Result<Device> {
     let en = DeviceEnumerator::new()?;
     match id {
-        Some(id) => en
-            .get_device(id)
-            .map_err(|e| Error(format!("device {id} unavailable: {e}"))),
+        Some(id) => en.get_device(id).map_err(|e| Error(format!("device {id} unavailable: {e}"))),
         None => Ok(en.get_default_device(dir)?),
     }
 }
@@ -211,31 +204,17 @@ fn open(device: &Device, dir: Direction) -> Result<Opened> {
         low_latency,
         exclusive: false,
         exclusive_fallback: None,
-        stream_latency_ms: client
-            .get_stream_latency()
-            .map(|hns| hns as f32 / 10_000.0)
-            .unwrap_or(0.0),
+        stream_latency_ms: client.get_stream_latency().map(|hns| hns as f32 / 10_000.0).unwrap_or(0.0),
     };
 
-    if is_f32_48k
-        && let Ok(p) = client.get_shared_mode_engine_period(&mix) {
-            if client
-                .initialize_shared_audio_stream(&mix, TimingMode::Events, p.min)
-                .is_ok()
-            {
-                let info = make_info(&client, p.min, true);
-                return Ok(Opened {
-                    client,
-                    format: mix,
-                    sample: SampleFmt::F32,
-                    channels,
-                    period_frames: p.min,
-                    info,
-                });
-            }
-            // A failed Initialize leaves the client unusable; start over.
-            client = device.get_iaudioclient()?;
+    if is_f32_48k && let Ok(p) = client.get_shared_mode_engine_period(&mix) {
+        if client.initialize_shared_audio_stream(&mix, TimingMode::Events, p.min).is_ok() {
+            let info = make_info(&client, p.min, true);
+            return Ok(Opened { client, format: mix, sample: SampleFmt::F32, channels, period_frames: p.min, info });
         }
+        // A failed Initialize leaves the client unusable; start over.
+        client = device.get_iaudioclient()?;
+    }
 
     let fmt = WaveFormat::new(32, 32, SampleType::Float, SAMPLE_RATE as usize, channels, None);
     let (def_hns, min_hns) = client.get_device_period()?;
@@ -382,7 +361,9 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
         }
 
         loop {
-            if let Some(0) = cap.get_next_packet_size()? { break }
+            if let Some(0) = cap.get_next_packet_size()? {
+                break;
+            }
             let (n, info) = cap.read_from_device(&mut bytes)?;
             let n = n as usize;
             if n == 0 {
@@ -649,7 +630,9 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
                 }
                 if !heard_anything {
                     heard_anything = bytes[..n as usize * block_align]
-                        .as_chunks::<4>().0.iter()
+                        .as_chunks::<4>()
+                        .0
+                        .iter()
                         .any(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]) != 0.0);
                 }
                 let injected = session.inject_qpc.load(Relaxed);

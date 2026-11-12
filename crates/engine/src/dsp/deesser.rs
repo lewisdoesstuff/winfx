@@ -3,7 +3,7 @@
 //! Linkwitz-Riley (LR4) crossover whose bands stay in phase and sum flat;
 //! "Wide" turns down the whole signal.
 
-use super::{db_to_lin, time_coeff, Biquad, Coeffs, FilterKind};
+use super::{Biquad, Coeffs, FilterKind, db_to_lin, time_coeff};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -29,7 +29,14 @@ pub struct DeesserParams {
 
 impl Default for DeesserParams {
     fn default() -> Self {
-        DeesserParams { freq_hz: 6000.0, threshold_db: -30.0, ratio: 4.0, range_db: 12.0, release_ms: 60.0, mode: DeesserMode::Split }
+        DeesserParams {
+            freq_hz: 6000.0,
+            threshold_db: -30.0,
+            ratio: 4.0,
+            range_db: 12.0,
+            release_ms: 60.0,
+            mode: DeesserMode::Split,
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 //! Space and character effects: reverb, delay, crusher.
 
-use super::{db_to_lin, Biquad, Coeffs, FilterKind};
+use super::{Biquad, Coeffs, FilterKind, db_to_lin};
 use serde::{Deserialize, Serialize};
 
 // ------------------------------------------------------------------ reverb
@@ -57,7 +57,10 @@ impl Reverb {
     pub fn new(p: &ReverbParams, sr: f32) -> Self {
         let scale = sr / 44_100.0;
         let mut r = Reverb {
-            combs: COMBS.iter().map(|&n| Comb { buf: vec![0.0; (n as f32 * scale) as usize], pos: 0, store: 0.0 }).collect(),
+            combs: COMBS
+                .iter()
+                .map(|&n| Comb { buf: vec![0.0; (n as f32 * scale) as usize], pos: 0, store: 0.0 })
+                .collect(),
             aps: ALLPASSES.iter().map(|&n| Allpass { buf: vec![0.0; (n as f32 * scale) as usize], pos: 0 }).collect(),
             pre: vec![0.0; (MAX_PREDELAY_MS * 0.001 * sr) as usize + 1],
             pre_pos: 0,
@@ -243,7 +246,10 @@ mod tests {
 
     #[test]
     fn delay_repeats_at_the_set_time() {
-        let mut d = Delay::new(&DelayParams { time_ms: 100.0, feedback: 0.5, mix: 1.0, high_cut_hz: 20_000.0, low_cut_hz: 10.0 }, 48_000.0);
+        let mut d = Delay::new(
+            &DelayParams { time_ms: 100.0, feedback: 0.5, mix: 1.0, high_cut_hz: 20_000.0, low_cut_hz: 10.0 },
+            48_000.0,
+        );
         let y: Vec<f32> = (0..20_000).map(|n| d.process(if n == 0 { 1.0 } else { 0.0 })).collect();
         let first = (1..20_000).max_by(|&a, &b| y[a].abs().total_cmp(&y[b].abs())).unwrap();
         assert!((first as i32 - 4800).abs() <= 2, "echo at {first}");

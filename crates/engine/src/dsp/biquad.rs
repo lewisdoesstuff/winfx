@@ -54,22 +54,10 @@ impl Coeffs {
             }
             FilterKind::Notch => (1.0, -2.0 * cos, 1.0, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
             FilterKind::BandPass => (alpha, 0.0, -alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
-            FilterKind::AllPass => (
-                1.0 - alpha,
-                -2.0 * cos,
-                1.0 + alpha,
-                1.0 + alpha,
-                -2.0 * cos,
-                1.0 - alpha,
-            ),
-            FilterKind::Peak => (
-                1.0 + alpha * a,
-                -2.0 * cos,
-                1.0 - alpha * a,
-                1.0 + alpha / a,
-                -2.0 * cos,
-                1.0 - alpha / a,
-            ),
+            FilterKind::AllPass => (1.0 - alpha, -2.0 * cos, 1.0 + alpha, 1.0 + alpha, -2.0 * cos, 1.0 - alpha),
+            FilterKind::Peak => {
+                (1.0 + alpha * a, -2.0 * cos, 1.0 - alpha * a, 1.0 + alpha / a, -2.0 * cos, 1.0 - alpha / a)
+            }
             FilterKind::LowShelf => {
                 let sq = 2.0 * a.sqrt() * alpha;
                 (

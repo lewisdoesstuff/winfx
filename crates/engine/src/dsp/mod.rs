@@ -43,9 +43,5 @@ pub fn lin_to_db(x: f32) -> f32 {
 /// `y = c*y + (1-c)*x` reaches ~63% of a step after `ms`.
 #[inline]
 pub fn time_coeff(ms: f32, sr: f32) -> f32 {
-    if ms <= 0.0 {
-        0.0
-    } else {
-        (-1.0 / (ms * 0.001 * sr)).exp()
-    }
+    if ms <= 0.0 { 0.0 } else { (-1.0 / (ms * 0.001 * sr)).exp() }
 }

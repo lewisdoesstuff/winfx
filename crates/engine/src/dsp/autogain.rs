@@ -2,7 +2,7 @@
 //! meter (ITU-R BS.1770 K-weighting, 400 ms "momentary" window). Pauses
 //! below the silence threshold freeze the gain, so room noise isn't pumped up.
 
-use super::{db_to_lin, time_coeff, Biquad, Coeffs, FilterKind};
+use super::{Biquad, Coeffs, FilterKind, db_to_lin, time_coeff};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -43,7 +43,13 @@ impl Autogain {
     pub fn new(p: &AutogainParams, sr: f32) -> Self {
         let mut a = Autogain {
             // K-weighting: the BS.1770 pre-filter (high shelf) and RLB high-pass.
-            shelf: Biquad::new(Coeffs::design(FilterKind::HighShelf, 1681.97, std::f32::consts::FRAC_1_SQRT_2, 4.0, sr)),
+            shelf: Biquad::new(Coeffs::design(
+                FilterKind::HighShelf,
+                1681.97,
+                std::f32::consts::FRAC_1_SQRT_2,
+                4.0,
+                sr,
+            )),
             hpf: Biquad::new(Coeffs::design(FilterKind::HighPass, 38.13, 0.5003, 0.0, sr)),
             ms_c: time_coeff(MOMENTARY_MS, sr),
             ms: 0.0,

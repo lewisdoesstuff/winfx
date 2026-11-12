@@ -1,6 +1,6 @@
 //! Noise gate with hysteresis, hold, range and a high-passed sidechain.
 
-use super::{db_to_lin, lin_to_db, time_coeff, Biquad, Coeffs, FilterKind};
+use super::{Biquad, Coeffs, FilterKind, db_to_lin, lin_to_db, time_coeff};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

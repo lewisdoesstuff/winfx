@@ -88,16 +88,17 @@ fn watch() {
             }
             if let Some(sh) = shared()
                 && sh.valid()
-                    && let Some((s, bytes)) = sh.read_config(seq) {
-                        seq = s;
-                        match serde_json::from_slice::<ChainConfig>(&bytes) {
-                            Ok(c) => {
-                                log::line(&format!("config {s}: {} effects", c.slots.len()));
-                                cfg = Some(c);
-                            }
-                            Err(e) => log::line(&format!("config {s}: bad JSON ({e})")),
-                        }
+                && let Some((s, bytes)) = sh.read_config(seq)
+            {
+                seq = s;
+                match serde_json::from_slice::<ChainConfig>(&bytes) {
+                    Ok(c) => {
+                        log::line(&format!("config {s}: {} effects", c.slots.len()));
+                        cfg = Some(c);
                     }
+                    Err(e) => log::line(&format!("config {s}: bad JSON ({e})")),
+                }
+            }
             let Ok(mut reg) = REGISTRY.lock() else { return };
             reg.retain(|i| {
                 // Collect the old chains RT handed back.
@@ -110,17 +111,18 @@ fn watch() {
                     return false;
                 }
                 if let Some(c) = &cfg
-                    && i.applied.load(Relaxed) != seq {
-                        let chain = Box::into_raw(Box::new(Chain::build(c, f32::from_bits(i.rate.load(Relaxed)))));
-                        let old = i.pending.swap(chain, AcqRel);
-                        if !old.is_null() {
-                            drop(unsafe { Box::from_raw(old) });
-                        }
-                        i.applied.store(seq, Relaxed);
-                        if let Some(sh) = shared() {
-                            sh.applied_seq.store(seq, Release);
-                        }
+                    && i.applied.load(Relaxed) != seq
+                {
+                    let chain = Box::into_raw(Box::new(Chain::build(c, f32::from_bits(i.rate.load(Relaxed)))));
+                    let old = i.pending.swap(chain, AcqRel);
+                    if !old.is_null() {
+                        drop(unsafe { Box::from_raw(old) });
                     }
+                    i.applied.store(seq, Relaxed);
+                    if let Some(sh) = shared() {
+                        sh.applied_seq.store(seq, Release);
+                    }
+                }
                 true
             });
             if let Some(sh) = shared() {

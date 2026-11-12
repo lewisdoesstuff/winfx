@@ -18,13 +18,21 @@ fn main() {
     let ch = mix.get_nchannels() as usize;
     let fmt = WaveFormat::new(32, 32, SampleType::Float, 48_000, ch, None);
     let (def, _min) = client.get_device_period().unwrap();
-    client.initialize_client(&fmt, Direction::Capture, StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: def }, None).unwrap();
+    client
+        .initialize_client(
+            &fmt,
+            Direction::Capture,
+            StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: def },
+            None,
+        )
+        .unwrap();
     let cap = client.get_audiocaptureclient().unwrap();
     let ev = client.set_get_eventhandle().unwrap();
     let mut buf = vec![0u8; client.get_buffer_size().unwrap() as usize * 4 * ch];
     client.start_stream().unwrap();
     let t0 = std::time::Instant::now();
-    let (mut frames, mut peak, mut sumsq, mut packets, mut zero_ts, mut ts_err, mut silent) = (0usize, 0f32, 0f64, 0, 0, 0, 0);
+    let (mut frames, mut peak, mut sumsq, mut packets, mut zero_ts, mut ts_err, mut silent) =
+        (0usize, 0f32, 0f64, 0, 0, 0, 0);
     let mut first_ts = None;
     let mut last_ts = 0u64;
     while t0.elapsed().as_secs_f32() < 3.0 {
@@ -41,9 +49,15 @@ fn main() {
                 break;
             }
             packets += 1;
-            if info.timestamp == 0 { zero_ts += 1; }
-            if info.flags.timestamp_error { ts_err += 1; }
-            if info.flags.silent { silent += 1; }
+            if info.timestamp == 0 {
+                zero_ts += 1;
+            }
+            if info.flags.timestamp_error {
+                ts_err += 1;
+            }
+            if info.flags.silent {
+                silent += 1;
+            }
             first_ts.get_or_insert(info.timestamp);
             last_ts = info.timestamp;
             for f in buf[..n as usize * 4 * ch].chunks_exact(4 * ch) {
@@ -56,6 +70,14 @@ fn main() {
     }
     let _ = client.stop_stream();
     let rms = (sumsq / frames.max(1) as f64).sqrt();
-    println!("frames {frames} ({:.2} s)  packets {packets}  peak {:.1} dBFS  rms {:.1} dBFS", frames as f32 / 48_000.0, 20.0 * (peak.max(1e-9)).log10(), 20.0 * rms.max(1e-9).log10());
-    println!("timestamps: zero {zero_ts}, error-flagged {ts_err}, silent-flagged {silent}, span {:.2} s", (last_ts - first_ts.unwrap_or(last_ts)) as f64 / 1e7);
+    println!(
+        "frames {frames} ({:.2} s)  packets {packets}  peak {:.1} dBFS  rms {:.1} dBFS",
+        frames as f32 / 48_000.0,
+        20.0 * (peak.max(1e-9)).log10(),
+        20.0 * rms.max(1e-9).log10()
+    );
+    println!(
+        "timestamps: zero {zero_ts}, error-flagged {ts_err}, silent-flagged {silent}, span {:.2} s",
+        (last_ts - first_ts.unwrap_or(last_ts)) as f64 / 1e7
+    );
 }

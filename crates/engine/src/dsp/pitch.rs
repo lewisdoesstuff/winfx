@@ -180,7 +180,15 @@ pub struct Harmonizer {
 
 impl Harmonizer {
     pub fn new(p: &HarmonizerParams, sr: f32) -> Self {
-        let mut h = Harmonizer { v1: Shifter::new(35.0, sr), v2: Shifter::new(45.0, sr), r1: 1.0, r2: 1.0, g1: 0.0, g2: 0.0, dry: 1.0 };
+        let mut h = Harmonizer {
+            v1: Shifter::new(35.0, sr),
+            v2: Shifter::new(45.0, sr),
+            r1: 1.0,
+            r2: 1.0,
+            g1: 0.0,
+            g2: 0.0,
+            dry: 1.0,
+        };
         h.set_params(p, sr);
         h
     }

@@ -184,10 +184,9 @@ pub fn specs(cfg: &EffectConfig) -> Vec<ParamSpec> {
             p(Freq, "Below", Hz, 40.0, 300.0, 1.0, true),
             p(Floor, "Floor", Hz, 10.0, 120.0, 1.0, true),
         ],
-        EffectConfig::Convolver(_) => vec![
-            p(Mix, "Mix", Percent, 0.0, 1.0, 0.01, false),
-            p(Gain, "Gain", Db, -24.0, 24.0, 0.1, false),
-        ],
+        EffectConfig::Convolver(_) => {
+            vec![p(Mix, "Mix", Percent, 0.0, 1.0, 0.01, false), p(Gain, "Gain", Db, -24.0, 24.0, 0.1, false)]
+        }
         EffectConfig::Pitch(_) => vec![
             p(ParamKey::Semitones, "Semitones", Unit::Semitones, -12.0, 12.0, 1.0, false),
             p(ParamKey::Cents, "Fine", Unit::Cents, -100.0, 100.0, 1.0, false),
@@ -468,7 +467,13 @@ pub fn format(unit: Unit, v: f32) -> String {
         Unit::Slope => format!("{} dB/oct", (v.round() as i32) * 12),
         Unit::Lufs => format!("{v:.1} LUFS"),
         Unit::Seconds => format!("{v:.1} s"),
-        Unit::DeessMode => if v >= 0.5 { "Whole signal".into() } else { "Highs only".into() },
+        Unit::DeessMode => {
+            if v >= 0.5 {
+                "Whole signal".into()
+            } else {
+                "Highs only".into()
+            }
+        }
         Unit::Percent => format!("{:.0} %", v * 100.0),
         Unit::Semitones => {
             let s = v.round() as i32;
@@ -511,14 +516,25 @@ pub fn new_effect(kind: &str) -> Option<EffectConfig> {
     use engine::chain::*;
     use engine::dsp::*;
     Some(match kind {
-        "High-pass" => EffectConfig::Filter(FilterParams { kind: FilterKind::HighPass, freq_hz: 80.0, q: 0.707, slope: 1 }),
-        "Low-pass" => EffectConfig::Filter(FilterParams { kind: FilterKind::LowPass, freq_hz: 12_000.0, q: 0.707, slope: 1 }),
+        "High-pass" => {
+            EffectConfig::Filter(FilterParams { kind: FilterKind::HighPass, freq_hz: 80.0, q: 0.707, slope: 1 })
+        }
+        "Low-pass" => {
+            EffectConfig::Filter(FilterParams { kind: FilterKind::LowPass, freq_hz: 12_000.0, q: 0.707, slope: 1 })
+        }
         "Equalizer" => EffectConfig::Eq(EqParams {
             bands: vec![
                 EqBand { enabled: true, kind: FilterKind::LowShelf, freq_hz: 120.0, gain_db: 0.0, q: 0.707, slope: 1 },
                 EqBand { enabled: true, kind: FilterKind::Peak, freq_hz: 500.0, gain_db: 0.0, q: 1.0, slope: 1 },
                 EqBand { enabled: true, kind: FilterKind::Peak, freq_hz: 3000.0, gain_db: 0.0, q: 1.0, slope: 1 },
-                EqBand { enabled: true, kind: FilterKind::HighShelf, freq_hz: 8000.0, gain_db: 0.0, q: 0.707, slope: 1 },
+                EqBand {
+                    enabled: true,
+                    kind: FilterKind::HighShelf,
+                    freq_hz: 8000.0,
+                    gain_db: 0.0,
+                    q: 0.707,
+                    slope: 1,
+                },
             ],
             gain_db: 0.0,
         }),
@@ -581,32 +597,32 @@ pub const NOTE_NAMES: [&str; 12] = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "
 pub fn summary(cfg: &EffectConfig) -> String {
     let db = |v: f32| format!("{v:.1} dB");
     let s = match cfg {
-        EffectConfig::Filter(f) => format!("{}, {}, Q {:.2}", format(Unit::Hz, f.freq_hz), format(Unit::Slope, f.slope as f32), f.q),
+        EffectConfig::Filter(f) => {
+            format!("{}, {}, Q {:.2}", format(Unit::Hz, f.freq_hz), format(Unit::Slope, f.slope as f32), f.q)
+        }
         EffectConfig::Eq(e) => {
             let on = e.bands.iter().filter(|b| b.enabled).count();
-            let g = if e.gain_db.abs() >= 0.05 { format!(", {} out", format(Unit::Db, e.gain_db)) } else { String::new() };
+            let g =
+                if e.gain_db.abs() >= 0.05 { format!(", {} out", format(Unit::Db, e.gain_db)) } else { String::new() };
             format!("{on} band{}{g}", if on == 1 { "" } else { "s" })
         }
         EffectConfig::Gate(g) => format!("{} threshold, {:.0} dB range", db(g.threshold_db), g.range_db),
-        EffectConfig::Compressor(c) => format!(
-            "{}, {:.1}:1, {} / {} ms",
-            db(c.threshold_db),
-            c.ratio,
-            trim(c.attack_ms),
-            trim(c.release_ms)
-        ),
+        EffectConfig::Compressor(c) => {
+            format!("{}, {:.1}:1, {} / {} ms", db(c.threshold_db), c.ratio, trim(c.attack_ms), trim(c.release_ms))
+        }
         EffectConfig::Gain(g) => format(Unit::Db, g.gain_db),
         EffectConfig::Limiter(l) => format!("Ceiling {}, {} ms look-ahead", db(l.ceiling_db), trim(l.lookahead_ms)),
-        EffectConfig::Deesser(d) => format!(
-            "Above {}, {}, {:.1}:1",
-            format(Unit::Hz, d.freq_hz),
-            db(d.threshold_db),
-            d.ratio
-        ),
+        EffectConfig::Deesser(d) => {
+            format!("Above {}, {}, {:.1}:1", format(Unit::Hz, d.freq_hz), db(d.threshold_db), d.ratio)
+        }
         EffectConfig::Expander(e) => format!("{}, {:.1}:1, up to {:.0} dB", db(e.threshold_db), e.ratio, e.range_db),
-        EffectConfig::Autogain(a) => format!("Target {}, +/-{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db)),
+        EffectConfig::Autogain(a) => {
+            format!("Target {}, +/-{:.0} dB", format(Unit::Lufs, a.target_lufs), a.max_boost_db.max(a.max_cut_db))
+        }
         EffectConfig::Maximizer(m) => format!("+{:.1} dB into {}", -m.threshold_db, db(m.ceiling_db)),
-        EffectConfig::Pitch(x) => format!("{}, ~{:.0} ms delay", format(Unit::Semitones, x.semitones), x.window_ms / 2.0),
+        EffectConfig::Pitch(x) => {
+            format!("{}, ~{:.0} ms delay", format(Unit::Semitones, x.semitones), x.window_ms / 2.0)
+        }
         EffectConfig::Harmonizer(x) => format!(
             "{} and {} voices",
             format(Unit::Semitones, x.voice1_semitones),

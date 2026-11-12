@@ -95,11 +95,16 @@ unsafe extern "system" fn inner_release(this: *mut c_void) -> u32 {
     }
 }
 
-static INNER_VTBL: IUnknown_Vtbl = IUnknown_Vtbl { QueryInterface: inner_qi, AddRef: inner_addref, Release: inner_release };
+static INNER_VTBL: IUnknown_Vtbl =
+    IUnknown_Vtbl { QueryInterface: inner_qi, AddRef: inner_addref, Release: inner_release };
 
 // ---------- delegating IUnknown (for every interface but `inner`) ----------
 
-unsafe extern "system" fn d_qi<const OFF: usize>(this: *mut c_void, iid: *const GUID, ppv: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn d_qi<const OFF: usize>(
+    this: *mut c_void,
+    iid: *const GUID,
+    ppv: *mut *mut c_void,
+) -> HRESULT {
     unsafe {
         let o = obj::<OFF>(this);
         (unknown_vtbl(o.outer).QueryInterface)(o.outer, iid, ppv)
@@ -133,7 +138,10 @@ unsafe extern "system" fn apo_get_latency(_this: *mut c_void, t: *mut i64) -> HR
     unsafe { *t = 0 };
     S_OK
 }
-unsafe extern "system" fn apo_get_registration_properties(this: *mut c_void, pp: *mut *mut APO_REG_PROPERTIES) -> HRESULT {
+unsafe extern "system" fn apo_get_registration_properties(
+    this: *mut c_void,
+    pp: *mut *mut APO_REG_PROPERTIES,
+) -> HRESULT {
     if pp.is_null() {
         return E_POINTER;
     }
@@ -164,10 +172,20 @@ unsafe fn format_query(this: *mut c_void, which: &str, requested: *mut c_void, p
         }
     }
 }
-unsafe extern "system" fn apo_is_input_format_supported(this: *mut c_void, _opp: *mut c_void, req: *mut c_void, pp: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn apo_is_input_format_supported(
+    this: *mut c_void,
+    _opp: *mut c_void,
+    req: *mut c_void,
+    pp: *mut *mut c_void,
+) -> HRESULT {
     unsafe { format_query(this, "Input", req, pp) }
 }
-unsafe extern "system" fn apo_is_output_format_supported(this: *mut c_void, _opp: *mut c_void, req: *mut c_void, pp: *mut *mut c_void) -> HRESULT {
+unsafe extern "system" fn apo_is_output_format_supported(
+    this: *mut c_void,
+    _opp: *mut c_void,
+    req: *mut c_void,
+    pp: *mut *mut c_void,
+) -> HRESULT {
     unsafe { format_query(this, "Output", req, pp) }
 }
 unsafe extern "system" fn apo_get_input_channel_count(this: *mut c_void, n: *mut u32) -> HRESULT {
@@ -243,7 +261,12 @@ static CFG_VTBL: IAudioProcessingObjectConfiguration_Vtbl = IAudioProcessingObje
 
 // ---------- IAudioSystemEffects / IAudioSystemEffects2 ----------
 
-unsafe extern "system" fn sfx_get_effects_list(_this: *mut c_void, ids: *mut *mut GUID, count: *mut u32, _event: HANDLE) -> HRESULT {
+unsafe extern "system" fn sfx_get_effects_list(
+    _this: *mut c_void,
+    ids: *mut *mut GUID,
+    count: *mut u32,
+    _event: HANDLE,
+) -> HRESULT {
     if ids.is_null() || count.is_null() {
         return E_POINTER;
     }
@@ -303,7 +326,12 @@ struct Factory {
 }
 
 impl IClassFactory_Impl for Factory_Impl {
-    fn CreateInstance(&self, outer: Ref<IUnknown>, riid: *const GUID, ppv: *mut *mut c_void) -> windows_core::Result<()> {
+    fn CreateInstance(
+        &self,
+        outer: Ref<IUnknown>,
+        riid: *const GUID,
+        ppv: *mut *mut c_void,
+    ) -> windows_core::Result<()> {
         if ppv.is_null() || riid.is_null() {
             return Err(E_POINTER.into());
         }
@@ -423,7 +451,10 @@ mod tests {
             outer.inner = inner;
             // Aggregated objects must refuse anything but IUnknown at creation.
             let mut bad = std::ptr::null_mut();
-            assert_eq!(create(CLSID_SFX, Some(outer_ptr), &IAudioProcessingObject::IID, &mut bad), CLASS_E_NOAGGREGATION);
+            assert_eq!(
+                create(CLSID_SFX, Some(outer_ptr), &IAudioProcessingObject::IID, &mut bad),
+                CLASS_E_NOAGGREGATION
+            );
 
             // QI through the outer for each interface; refs land on the outer.
             let before = outer.refs.load(Ordering::Relaxed);
@@ -470,8 +501,18 @@ mod tests {
 
             let input = vec![0.25f32; 480 * 2];
             let mut output = vec![0f32; 480 * 2];
-            let mut ip = APO_CONNECTION_PROPERTY { pBuffer: input.as_ptr() as usize, u32ValidFrameCount: 480, u32BufferFlags: BUFFER_VALID, u32Signature: 0 };
-            let mut op = APO_CONNECTION_PROPERTY { pBuffer: output.as_mut_ptr() as usize, u32ValidFrameCount: 0, u32BufferFlags: BUFFER_INVALID, u32Signature: 0 };
+            let mut ip = APO_CONNECTION_PROPERTY {
+                pBuffer: input.as_ptr() as usize,
+                u32ValidFrameCount: 480,
+                u32BufferFlags: BUFFER_VALID,
+                u32Signature: 0,
+            };
+            let mut op = APO_CONNECTION_PROPERTY {
+                pBuffer: output.as_mut_ptr() as usize,
+                u32ValidFrameCount: 0,
+                u32BufferFlags: BUFFER_INVALID,
+                u32Signature: 0,
+            };
             let pip = [&mut ip as *mut APO_CONNECTION_PROPERTY as *const APO_CONNECTION_PROPERTY];
             let mut pop = [&mut op as *mut APO_CONNECTION_PROPERTY];
             rt.APOProcess(1, pip.as_ptr(), 1, pop.as_mut_ptr());

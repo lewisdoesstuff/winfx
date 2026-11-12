@@ -40,7 +40,12 @@ fn main() {
     let fmt = WaveFormat::new(32, 32, SampleType::Float, rate as usize, ch, None);
     let (def, _min) = client.get_device_period().unwrap();
     client
-        .initialize_client(&fmt, Direction::Capture, StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: def }, None)
+        .initialize_client(
+            &fmt,
+            Direction::Capture,
+            StreamMode::EventsShared { autoconvert: true, buffer_duration_hns: def },
+            None,
+        )
         .unwrap();
     let cap = client.get_audiocaptureclient().unwrap();
     let ev = client.set_get_eventhandle().unwrap();
@@ -73,5 +78,10 @@ fn main() {
     let tone = goertzel(x, 1000.0, rate);
     let side = (goertzel(x, 870.0, rate) + goertzel(x, 1130.0, rate)) / 2.0;
     println!("{:.2} s  rms {:.1} dBFS  peak {:.1} dBFS", x.len() as f32 / rate, db(rms), db(peak));
-    println!("1 kHz tone {:.1} dBFS (neighbours {:.1} dBFS) -> {}", db(tone), db(side), if tone > 0.01 && tone > side * 10.0 { "APO ACTIVE" } else { "no tone" });
+    println!(
+        "1 kHz tone {:.1} dBFS (neighbours {:.1} dBFS) -> {}",
+        db(tone),
+        db(side),
+        if tone > 0.01 && tone > side * 10.0 { "APO ACTIVE" } else { "no tone" }
+    );
 }

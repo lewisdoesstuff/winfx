@@ -6,13 +6,13 @@
 //! back to be dropped off the audio thread.
 
 use crate::dsp::{
-    Autogain, AutogainParams, BassEnhancer, BassEnhancerParams, Biquad, Coeffs, Compressor,
-    CompressorParams, Convolver, ConvolverParams, Deesser, DeesserParams, Exciter, ExciterParams,
-    Expander, ExpanderParams, FilterKind, Gain, GainParams, Gate, GateParams, Limiter, LimiterParams,
-    Maximizer, MaximizerParams, time_coeff, Autotune, AutotuneParams, Crusher, CrusherParams, Delay,
-    DelayParams, Harmonizer, HarmonizerParams, PitchParams, PitchShift, Reverb, ReverbParams,
+    Autogain, AutogainParams, Autotune, AutotuneParams, BassEnhancer, BassEnhancerParams, Biquad, Coeffs, Compressor,
+    CompressorParams, Convolver, ConvolverParams, Crusher, CrusherParams, Deesser, DeesserParams, Delay, DelayParams,
+    Exciter, ExciterParams, Expander, ExpanderParams, FilterKind, Gain, GainParams, Gate, GateParams, Harmonizer,
+    HarmonizerParams, Limiter, LimiterParams, Maximizer, MaximizerParams, PitchParams, PitchShift, Reverb,
+    ReverbParams, time_coeff,
 };
-use crate::meters::{block_levels, Meters, MAX_SLOTS};
+use crate::meters::{MAX_SLOTS, Meters, block_levels};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -147,9 +147,7 @@ impl EffectConfig {
     pub fn response_db(&self, freq: f32, sr: f32) -> Option<f32> {
         match self {
             EffectConfig::Filter(p) => Some(p.coeffs(sr).magnitude_db(freq, sr) * p.stages() as f32),
-            EffectConfig::Eq(p) => {
-                Some(p.gain_db + p.bands.iter().map(|b| b.response_db(freq, sr)).sum::<f32>())
-            }
+            EffectConfig::Eq(p) => Some(p.gain_db + p.bands.iter().map(|b| b.response_db(freq, sr)).sum::<f32>()),
             EffectConfig::Gain(p) => Some(p.gain_db),
             _ => None,
         }
@@ -222,7 +220,12 @@ impl ChainConfig {
                 build(vec![
                     hp(80.0, 1),
                     EffectConfig::Gain(GainParams { gain_db: 0.0 }),
-                    EffectConfig::Expander(ExpanderParams { threshold_db: -50.0, ratio: 2.0, range_db: 15.0, ..Default::default() }),
+                    EffectConfig::Expander(ExpanderParams {
+                        threshold_db: -50.0,
+                        ratio: 2.0,
+                        range_db: 15.0,
+                        ..Default::default()
+                    }),
                     EffectConfig::Compressor(CompressorParams {
                         threshold_db: -24.0,
                         ratio: 3.0,
@@ -241,7 +244,12 @@ impl ChainConfig {
                 build(vec![
                     hp(80.0, 2),
                     EffectConfig::Gain(GainParams { gain_db: 0.0 }),
-                    EffectConfig::Expander(ExpanderParams { threshold_db: -45.0, ratio: 4.0, range_db: 25.0, ..Default::default() }),
+                    EffectConfig::Expander(ExpanderParams {
+                        threshold_db: -45.0,
+                        ratio: 4.0,
+                        range_db: 25.0,
+                        ..Default::default()
+                    }),
                     EffectConfig::Eq(EqParams {
                         bands: vec![
                             band(LowShelf, 120.0, 2.0, 0.707),
@@ -324,10 +332,7 @@ impl Proc {
         match cfg {
             EffectConfig::Filter(p) => Proc::Filter(vec![Biquad::new(p.coeffs(sr)); p.stages()]),
             EffectConfig::Eq(p) => Proc::Eq(
-                p.bands
-                    .iter()
-                    .flat_map(|b| std::iter::repeat_n(Biquad::new(b.coeffs(sr)), b.stages()))
-                    .collect(),
+                p.bands.iter().flat_map(|b| std::iter::repeat_n(Biquad::new(b.coeffs(sr)), b.stages())).collect(),
                 Gain::new(&GainParams { gain_db: p.gain_db }, sr),
             ),
             EffectConfig::Gate(p) => Proc::Gate(Gate::new(p, sr)),

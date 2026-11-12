@@ -8,8 +8,8 @@
 //! Everything is preallocated atomics: the audio thread never locks or
 //! allocates, and the UI tolerates the odd torn read in display data.
 
-use crate::meters::AtomicF32;
 use crate::SAMPLE_RATE;
+use crate::meters::AtomicF32;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering::Relaxed};
 
 pub const SCOPE_LEN: usize = 8192;

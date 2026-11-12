@@ -60,10 +60,15 @@ pub fn kernel(path: &str, sr: f32) -> Result<Arc<Kernel>, String> {
 }
 
 fn load(path: &str, sr: f32) -> Result<Kernel, String> {
-    let (mut ir, info) = crate::wav::read_mono(std::path::Path::new(path), sr, MAX_IR_SECONDS)
-        .map_err(|e| format!("the IR: {e}"))?;
+    let (mut ir, info) =
+        crate::wav::read_mono(std::path::Path::new(path), sr, MAX_IR_SECONDS).map_err(|e| format!("the IR: {e}"))?;
     let out_len = ir.len();
-    let spec = hound::WavSpec { channels: info.channels, sample_rate: info.source_rate, bits_per_sample: 0, sample_format: hound::SampleFormat::Float };
+    let spec = hound::WavSpec {
+        channels: info.channels,
+        sample_rate: info.source_rate,
+        bits_per_sample: 0,
+        sample_format: hound::SampleFormat::Float,
+    };
     // Unity power gain, so swapping IRs doesn't jump the level.
     let energy: f32 = ir.iter().map(|v| v * v).sum::<f32>().sqrt();
     if energy < 1e-9 {
@@ -220,7 +225,12 @@ mod tests {
     use super::*;
 
     fn write_ir(path: &std::path::Path, ir: &[f32], rate: u32) {
-        let spec = hound::WavSpec { channels: 1, sample_rate: rate, bits_per_sample: 32, sample_format: hound::SampleFormat::Float };
+        let spec = hound::WavSpec {
+            channels: 1,
+            sample_rate: rate,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
         let mut w = hound::WavWriter::create(path, spec).unwrap();
         for &s in ir {
             w.write_sample(s).unwrap();

@@ -7,9 +7,7 @@ use std::path::PathBuf;
 const MAX_BYTES: u64 = 1 << 20;
 
 pub fn path() -> PathBuf {
-    PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into()))
-        .join("winfx")
-        .join("winfx.log")
+    PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into())).join("winfx").join("winfx.log")
 }
 
 pub fn line(msg: &str) {
@@ -57,20 +55,13 @@ pub fn status_changes(old: &engine::Status, new: &engine::Status) {
             i.channels,
             i.device_rate,
             if i.exclusive { "exclusive" } else { "shared" },
-            i.exclusive_fallback
-                .as_deref()
-                .map(|e| format!(", exclusive failed: {e}"))
-                .unwrap_or_default()
+            i.exclusive_fallback.as_deref().map(|e| format!(", exclusive failed: {e}")).unwrap_or_default()
         ));
     }
     if old.output.as_ref().map(|o| &o.name) != new.output.as_ref().map(|o| &o.name)
         && let Some(o) = &new.output
     {
-        line(&format!(
-            "output {} ({})",
-            o.name,
-            if o.exclusive { "exclusive" } else { "shared" }
-        ));
+        line(&format!("output {} ({})", o.name, if o.exclusive { "exclusive" } else { "shared" }));
     }
     if old.monitor_error != new.monitor_error
         && let Some(e) = &new.monitor_error

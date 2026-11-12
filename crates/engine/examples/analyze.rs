@@ -4,7 +4,7 @@
 //! processed version next to the recording as "<name> - <preset>.wav".
 
 use engine::analysis::{analyze, gr_split, render, speech_windows};
-use engine::import::{import, Imported};
+use engine::import::{Imported, import};
 use engine::{ChainConfig, SAMPLE_RATE};
 use std::path::{Path, PathBuf};
 
@@ -25,7 +25,9 @@ fn load_chain(arg: &str) -> Result<(String, ChainConfig), String> {
                 Imported::Chain(c, _) => Ok((name, c)),
                 Imported::Eq(eq, _) => Ok((
                     name,
-                    ChainConfig { slots: vec![engine::EffectSlot { id: 1, bypass: false, effect: engine::EffectConfig::Eq(eq) }] },
+                    ChainConfig {
+                        slots: vec![engine::EffectSlot { id: 1, bypass: false, effect: engine::EffectConfig::Eq(eq) }],
+                    },
                 )),
             }
         }
@@ -40,7 +42,8 @@ fn main() {
         eprintln!("usage: analyze <recording.wav> [raw|current|preset.json]...");
         std::process::exit(2);
     };
-    let (input, info) = engine::wav::read_mono(Path::new(rec), SAMPLE_RATE as f32, 600.0).unwrap_or_else(|e| panic!("{e}"));
+    let (input, info) =
+        engine::wav::read_mono(Path::new(rec), SAMPLE_RATE as f32, 600.0).unwrap_or_else(|e| panic!("{e}"));
     println!(
         "{rec}: {:.1} s (source {} Hz, {} ch)\n",
         input.len() as f32 / SAMPLE_RATE as f32,
@@ -48,7 +51,8 @@ fn main() {
         info.channels
     );
     let speech = speech_windows(&input);
-    let presets: Vec<&str> = if args.len() > 1 { args[1..].iter().map(String::as_str).collect() } else { vec!["raw", "current"] };
+    let presets: Vec<&str> =
+        if args.len() > 1 { args[1..].iter().map(String::as_str).collect() } else { vec!["raw", "current"] };
 
     let mut reports = vec![];
     for p in &presets {

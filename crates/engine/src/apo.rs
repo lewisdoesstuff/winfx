@@ -40,7 +40,9 @@ pub fn endpoint_guid(device_id: &str) -> Option<&str> {
 fn open(path: &str, access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Option<HKEY> {
     let mut k = HKEY::default();
     let p = wide(path);
-    unsafe { (RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(p.as_ptr()), None, access, &mut k) == ERROR_SUCCESS).then_some(k) }
+    unsafe {
+        (RegOpenKeyExW(HKEY_LOCAL_MACHINE, PCWSTR(p.as_ptr()), None, access, &mut k) == ERROR_SUCCESS).then_some(k)
+    }
 }
 
 /// Read a value as a string (REG_SZ, or REG_BINARY holding a serialized
@@ -66,13 +68,14 @@ fn get(path: &str, name: &str) -> Option<String> {
     }
     buf.truncate(len as usize);
     let utf16 = |b: &[u8]| {
-        let w: Vec<u16> = b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
+        let w: Vec<u16> =
+            b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]])).take_while(|&c| c != 0).collect();
         String::from_utf16_lossy(&w)
     };
     match ty.0 {
-        1 | 2 => Some(utf16(&buf)),                                           // REG_SZ / REG_EXPAND_SZ
+        1 | 2 => Some(utf16(&buf)), // REG_SZ / REG_EXPAND_SZ
         4 if buf.len() >= 4 => Some(u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]).to_string()), // REG_DWORD
-        3 if buf.len() > 8 => Some(utf16(&buf[8..])),                          // serialized PROPVARIANT
+        3 if buf.len() > 8 => Some(utf16(&buf[8..])), // serialized PROPVARIANT
         _ => None,
     }
 }
@@ -84,7 +87,9 @@ fn subkeys(path: &str) -> Vec<String> {
     loop {
         let mut name = [0u16; 256];
         let mut len = name.len() as u32;
-        let r = unsafe { RegEnumKeyExW(k, i, Some(windows::core::PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None) };
+        let r = unsafe {
+            RegEnumKeyExW(k, i, Some(windows::core::PWSTR(name.as_mut_ptr())), &mut len, None, None, None, None)
+        };
         if r != ERROR_SUCCESS {
             break;
         }
@@ -99,7 +104,8 @@ fn subkeys(path: &str) -> Vec<String> {
 
 /// The APO's COM class is registered (setup has run).
 pub fn installed() -> bool {
-    get(&format!(r"SOFTWARE\Classes\CLSID\{}\InprocServer32", clsid_string(&CLSID_SFX)), "").is_some_and(|p| Path::new(&p).exists())
+    get(&format!(r"SOFTWARE\Classes\CLSID\{}\InprocServer32", clsid_string(&CLSID_SFX)), "")
+        .is_some_and(|p| Path::new(&p).exists())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -133,11 +139,7 @@ fn endpoint(guid: &str) -> Option<Endpoint> {
 /// set of endpoints per sample rate, so this covers the other rates too.
 pub fn siblings(guid: &str) -> Vec<Endpoint> {
     let Some(me) = endpoint(guid) else { return vec![] };
-    subkeys(CAPTURE)
-        .iter()
-        .filter_map(|g| endpoint(g))
-        .filter(|e| e.name == me.name && e.device == me.device)
-        .collect()
+    subkeys(CAPTURE).iter().filter_map(|g| endpoint(g)).filter(|e| e.name == me.name && e.device == me.device).collect()
 }
 
 pub fn attached(guid: &str) -> bool {
@@ -146,7 +148,8 @@ pub fn attached(guid: &str) -> bool {
 
 /// "Audio enhancements" are off for the endpoint, so Windows skips its APOs.
 pub fn enhancements_off(guid: &str) -> bool {
-    get(&format!(r"{CAPTURE}\{guid}\FxProperties"), "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5").is_some_and(|v| v == "1")
+    get(&format!(r"{CAPTURE}\{guid}\FxProperties"), "{1da5d803-d492-4edd-8c23-e0c0ffee7f0e},5")
+        .is_some_and(|v| v == "1")
 }
 
 /// Turn audio enhancements on or off. Unelevated and applied live: goes
@@ -189,7 +192,10 @@ pub fn ensure_data_dir() -> std::io::Result<PathBuf> {
     let dir = data_dir();
     if !dir.join(".acl").exists() {
         std::fs::create_dir_all(&dir)?;
-        run_hidden("icacls", &[dir.to_str().unwrap_or_default(), "/grant", "*S-1-5-19:(OI)(CI)M", "*S-1-5-32-545:(OI)(CI)M"])?;
+        run_hidden(
+            "icacls",
+            &[dir.to_str().unwrap_or_default(), "/grant", "*S-1-5-19:(OI)(CI)M", "*S-1-5-32-545:(OI)(CI)M"],
+        )?;
         std::fs::write(dir.join(".acl"), b"")?;
     }
     Ok(dir)
@@ -205,7 +211,9 @@ fn run_hidden(exe: &str, args: &[&str]) -> std::io::Result<()> {
 /// Admin only. Install `dll` under Program Files, register it, attach it to
 /// every endpoint in `endpoints` (and their sibling endpoints), restart audio.
 pub fn setup(dll: &Path, endpoints: &[String]) -> Result<String, String> {
-    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE as HKLM, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, RegCreateKeyExW};
+    use windows::Win32::System::Registry::{
+        HKEY_LOCAL_MACHINE as HKLM, KEY_WRITE, REG_DWORD, REG_OPTION_NON_VOLATILE, RegCreateKeyExW,
+    };
     let dir = install_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     let target = dir.join("winfx_apo.dll");
@@ -218,15 +226,35 @@ pub fn setup(dll: &Path, endpoints: &[String]) -> Result<String, String> {
         let create = |path: &str| -> Result<HKEY, String> {
             let mut k = HKEY::default();
             let p = wide(path);
-            unsafe { RegCreateKeyExW(HKLM, PCWSTR(p.as_ptr()), None, None, REG_OPTION_NON_VOLATILE, KEY_WRITE, None, &mut k, None) }
-                .ok()
-                .map_err(|e| format!("{path}: {e}"))?;
+            unsafe {
+                RegCreateKeyExW(
+                    HKLM,
+                    PCWSTR(p.as_ptr()),
+                    None,
+                    None,
+                    REG_OPTION_NON_VOLATILE,
+                    KEY_WRITE,
+                    None,
+                    &mut k,
+                    None,
+                )
+            }
+            .ok()
+            .map_err(|e| format!("{path}: {e}"))?;
             Ok(k)
         };
         let set_sz = |k: HKEY, name: &str, val: &str| {
             let (n, v) = (wide(name), wide(val));
             let b = unsafe { std::slice::from_raw_parts(v.as_ptr() as *const u8, v.len() * 2) };
-            unsafe { RegSetValueExW(k, if name.is_empty() { PCWSTR::null() } else { PCWSTR(n.as_ptr()) }, None, REG_SZ, Some(b)) }
+            unsafe {
+                RegSetValueExW(
+                    k,
+                    if name.is_empty() { PCWSTR::null() } else { PCWSTR(n.as_ptr()) },
+                    None,
+                    REG_SZ,
+                    Some(b),
+                )
+            }
         };
         let set_dw = |k: HKEY, name: &str, val: u32| {
             let n = wide(name);
@@ -237,11 +265,15 @@ pub fn setup(dll: &Path, endpoints: &[String]) -> Result<String, String> {
             let name = format!("WinFX capture effects ({slot})");
             let k = create(&format!(r"SOFTWARE\Classes\CLSID\{c}"))?;
             let _ = set_sz(k, "", &name);
-            unsafe { let _ = RegCloseKey(k); }
+            unsafe {
+                let _ = RegCloseKey(k);
+            }
             let k = create(&format!(r"SOFTWARE\Classes\CLSID\{c}\InprocServer32"))?;
             let _ = set_sz(k, "", target.to_str().unwrap_or_default());
             let _ = set_sz(k, "ThreadingModel", "Both");
-            unsafe { let _ = RegCloseKey(k); }
+            unsafe {
+                let _ = RegCloseKey(k);
+            }
             let k = create(&format!(r"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{c}"))?;
             let _ = set_sz(k, "FriendlyName", &name);
             let _ = set_sz(k, "Copyright", "WinFX");
@@ -259,7 +291,9 @@ pub fn setup(dll: &Path, endpoints: &[String]) -> Result<String, String> {
                 let _ = set_dw(k, n, v);
             }
             let _ = set_sz(k, "APOInterface0", "{FD7F2B29-24D0-4B5C-B177-592C39F9CA10}");
-            unsafe { let _ = RegCloseKey(k); }
+            unsafe {
+                let _ = RegCloseKey(k);
+            }
         }
         let mut all: Vec<Endpoint> = vec![];
         for e in endpoints {
@@ -294,7 +328,10 @@ pub fn remove() -> Result<String, String> {
     }
     stop_audio()?;
     for c in [clsid_string(&CLSID_SFX), clsid_string(&CLSID_MFX)] {
-        for k in [format!(r"SOFTWARE\Classes\CLSID\{c}"), format!(r"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{c}")] {
+        for k in [
+            format!(r"SOFTWARE\Classes\CLSID\{c}"),
+            format!(r"SOFTWARE\Classes\AudioEngine\AudioProcessingObjects\{c}"),
+        ] {
             let w = wide(&k);
             unsafe {
                 let _ = windows::Win32::System::Registry::RegDeleteTreeW(HKEY_LOCAL_MACHINE, PCWSTR(w.as_ptr()));
@@ -317,10 +354,11 @@ fn backup_fx(guid: &str) {
         return;
     }
     if let Some(orig) = get(&format!(r"{CAPTURE}\{guid}\FxProperties"), SFX_VALUE)
-        && !orig.eq_ignore_ascii_case(&clsid_string(&CLSID_SFX)) {
-            let _ = std::fs::create_dir_all(p.parent().unwrap());
-            let _ = std::fs::write(&p, orig);
-        }
+        && !orig.eq_ignore_ascii_case(&clsid_string(&CLSID_SFX))
+    {
+        let _ = std::fs::create_dir_all(p.parent().unwrap());
+        let _ = std::fs::write(&p, orig);
+    }
 }
 
 fn restore_fx(guid: &str) {
@@ -381,7 +419,8 @@ mod policy {
         _get_share_mode: usize,
         _set_share_mode: usize,
         _get_property_value: usize,
-        SetPropertyValue: unsafe extern "system" fn(*mut c_void, PCWSTR, BOOL, *const PROPERTYKEY, *const PROPVARIANT) -> HRESULT,
+        SetPropertyValue:
+            unsafe extern "system" fn(*mut c_void, PCWSTR, BOOL, *const PROPERTYKEY, *const PROPVARIANT) -> HRESULT,
     }
     const CLSID_POLICY_CONFIG: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
 
@@ -403,7 +442,10 @@ mod tests {
 
     #[test]
     fn guid_from_device_id() {
-        assert_eq!(endpoint_guid("{0.0.1.00000000}.{c950d195-7502-492a-89a4-9d30cbb65fc7}"), Some("{c950d195-7502-492a-89a4-9d30cbb65fc7}"));
+        assert_eq!(
+            endpoint_guid("{0.0.1.00000000}.{c950d195-7502-492a-89a4-9d30cbb65fc7}"),
+            Some("{c950d195-7502-492a-89a4-9d30cbb65fc7}")
+        );
         assert_eq!(endpoint_guid("nonsense"), None);
     }
 

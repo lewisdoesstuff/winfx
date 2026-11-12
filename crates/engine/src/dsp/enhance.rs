@@ -5,7 +5,7 @@
 //! - **Bass enhancer** (warmth): band below `freq_hz` → saturation → keep the
 //!   new harmonics (up to a few times `freq_hz`, above a subsonic floor) → mixed in.
 
-use super::{db_to_lin, Biquad, Coeffs, FilterKind};
+use super::{Biquad, Coeffs, FilterKind, db_to_lin};
 use serde::{Deserialize, Serialize};
 
 const Q: f32 = std::f32::consts::FRAC_1_SQRT_2;
@@ -45,7 +45,13 @@ pub struct Exciter {
 
 impl Exciter {
     pub fn new(p: &ExciterParams, sr: f32) -> Self {
-        let mut e = Exciter { pre: Default::default(), post: Default::default(), top: Biquad::default(), amount: 0.0, drive: 1.0 };
+        let mut e = Exciter {
+            pre: Default::default(),
+            post: Default::default(),
+            top: Biquad::default(),
+            amount: 0.0,
+            drive: 1.0,
+        };
         e.set_params(p, sr);
         e
     }
@@ -97,7 +103,13 @@ pub struct BassEnhancer {
 
 impl BassEnhancer {
     pub fn new(p: &BassEnhancerParams, sr: f32) -> Self {
-        let mut b = BassEnhancer { pre: Default::default(), keep_lo: Biquad::default(), keep_hi: Biquad::default(), amount: 0.0, drive: 1.0 };
+        let mut b = BassEnhancer {
+            pre: Default::default(),
+            keep_lo: Biquad::default(),
+            keep_hi: Biquad::default(),
+            amount: 0.0,
+            drive: 1.0,
+        };
         b.set_params(p, sr);
         b
     }
@@ -137,7 +149,8 @@ mod tests {
     }
 
     fn run(mut f: impl FnMut(f32) -> f32, freq: f32) -> Vec<f32> {
-        let x: Vec<f32> = (0..48_000).map(|n| 0.3 * (2.0 * std::f32::consts::PI * freq * n as f32 / 48_000.0).sin()).collect();
+        let x: Vec<f32> =
+            (0..48_000).map(|n| 0.3 * (2.0 * std::f32::consts::PI * freq * n as f32 / 48_000.0).sin()).collect();
         x.into_iter().map(|s| f(s)).collect::<Vec<_>>()[24_000..].to_vec()
     }
 

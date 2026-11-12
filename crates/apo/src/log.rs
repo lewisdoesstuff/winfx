@@ -10,8 +10,12 @@ pub fn line(msg: &str) {
     if cfg!(test) {
         return;
     }
-    let line = format!("{}.{:03} pid {pid} {msg}
-", now.as_secs(), now.subsec_millis());
+    let line = format!(
+        "{}.{:03} pid {pid} {msg}
+",
+        now.as_secs(),
+        now.subsec_millis()
+    );
     if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
         let _ = f.write_all(line.as_bytes());
     }

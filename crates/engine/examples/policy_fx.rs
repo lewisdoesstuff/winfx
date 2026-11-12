@@ -29,8 +29,10 @@ struct IPolicyConfig_Vtbl {
     SetProcessingPeriod: usize,
     GetShareMode: usize,
     SetShareMode: usize,
-    GetPropertyValue: unsafe extern "system" fn(*mut c_void, PCWSTR, BOOL, *const PROPERTYKEY, *mut PROPVARIANT) -> HRESULT,
-    SetPropertyValue: unsafe extern "system" fn(*mut c_void, PCWSTR, BOOL, *const PROPERTYKEY, *const PROPVARIANT) -> HRESULT,
+    GetPropertyValue:
+        unsafe extern "system" fn(*mut c_void, PCWSTR, BOOL, *const PROPERTYKEY, *mut PROPVARIANT) -> HRESULT,
+    SetPropertyValue:
+        unsafe extern "system" fn(*mut c_void, PCWSTR, BOOL, *const PROPERTYKEY, *const PROPVARIANT) -> HRESULT,
     SetDefaultEndpoint: usize,
     SetEndpointVisibility: usize,
 }

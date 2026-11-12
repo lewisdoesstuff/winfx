@@ -18,7 +18,15 @@ pub struct ExpanderParams {
 
 impl Default for ExpanderParams {
     fn default() -> Self {
-        ExpanderParams { threshold_db: -45.0, ratio: 2.0, range_db: 20.0, attack_ms: 2.0, release_ms: 150.0, knee_db: 6.0, rms_ms: 10.0 }
+        ExpanderParams {
+            threshold_db: -45.0,
+            ratio: 2.0,
+            range_db: 20.0,
+            attack_ms: 2.0,
+            release_ms: 150.0,
+            knee_db: 6.0,
+            rms_ms: 10.0,
+        }
     }
 }
 
@@ -50,7 +58,17 @@ pub struct Expander {
 
 impl Expander {
     pub fn new(p: &ExpanderParams, sr: f32) -> Self {
-        let mut e = Expander { thr: 0.0, ratio: 1.0, knee: 0.0, range: 0.0, rms_c: 0.0, att_c: 0.0, rel_c: 0.0, ms: 0.0, gr_db: 0.0 };
+        let mut e = Expander {
+            thr: 0.0,
+            ratio: 1.0,
+            knee: 0.0,
+            range: 0.0,
+            rms_c: 0.0,
+            att_c: 0.0,
+            rel_c: 0.0,
+            ms: 0.0,
+            gr_db: 0.0,
+        };
         e.set_params(p, sr);
         e.gr_db = -e.range;
         e
