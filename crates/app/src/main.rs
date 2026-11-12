@@ -2,6 +2,7 @@
 
 mod assets;
 mod fluent;
+mod log;
 mod params;
 mod spectrum;
 mod state;
@@ -41,6 +42,10 @@ fn main() {
         return;
     }
     let hidden = std::env::args().any(|a| a == "--hidden");
+    if !preview {
+        log::install_panic_hook();
+        log::line(&format!("WinFX {} starting", env!("CARGO_PKG_VERSION")));
+    }
 
     gpui_platform::application()
         .with_assets(assets::Assets)

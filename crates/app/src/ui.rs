@@ -116,6 +116,49 @@ fn sentence(e: &str) -> String {
     out
 }
 
+/// Record what a bug report needs: state changes and errors, not meter noise.
+fn log_status_changes(old: &engine::Status, new: &engine::Status) {
+    if old.state != new.state || old.last_error != new.last_error {
+        crate::log::line(&format!(
+            "engine {:?}{}",
+            new.state,
+            new.last_error.as_deref().map(|e| format!(": {e}")).unwrap_or_default()
+        ));
+    }
+    if old.input.as_ref().map(|i| &i.name) != new.input.as_ref().map(|i| &i.name) {
+        if let Some(i) = &new.input {
+            crate::log::line(&format!(
+                "input {} ({} ch, {} Hz, {}{})",
+                i.name,
+                i.channels,
+                i.device_rate,
+                if i.exclusive { "exclusive" } else { "shared" },
+                i.exclusive_fallback.as_deref().map(|e| format!(", exclusive failed: {e}")).unwrap_or_default()
+            ));
+        }
+    }
+    if old.output.as_ref().map(|o| &o.name) != new.output.as_ref().map(|o| &o.name) {
+        if let Some(o) = &new.output {
+            crate::log::line(&format!("output {} ({})", o.name, if o.exclusive { "exclusive" } else { "shared" }));
+        }
+    }
+    if old.monitor_error != new.monitor_error {
+        if let Some(e) = &new.monitor_error {
+            crate::log::line(&format!("monitor: {e}"));
+        }
+    }
+    let d = |s: &engine::Status| s.direct.as_ref().map(|d| (d.active, d.error.clone()));
+    if d(old) != d(new) {
+        if let Some(x) = &new.direct {
+            crate::log::line(&format!(
+                "direct mode: {}{}",
+                if x.active { "processing" } else { "not processing" },
+                x.error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default()
+            ));
+        }
+    }
+}
+
 fn fmt_db(v: f32) -> String {
     format!("{v:.0} dB")
 }
@@ -777,10 +820,13 @@ impl MainView {
     }
 
     fn tick(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let (status, meters) = {
+        let (status, meters, preview) = {
             let s = self.state.read(cx);
-            (s.engine.status(), s.engine.meters().clone())
+            (s.engine.status(), s.engine.meters().clone(), s.preview)
         };
+        if !preview {
+            log_status_changes(&self.status, &status);
+        }
         let now = Instant::now();
         let dt = now.duration_since(self.levels.last).as_secs_f32();
         self.levels.last = now;
