@@ -13,7 +13,8 @@
   <a href="../../releases/latest">Download</a> ·
   <a href="#getting-started">Getting started</a> ·
   <a href="#troubleshooting">Troubleshooting</a> ·
-  <a href="#building-from-source">Building</a>
+  <a href="#building-from-source">Building</a> ·
+  <a href="#code-signing-policy">Code signing policy</a>
 </p>
 
 <picture>
@@ -126,6 +127,23 @@ To build the installer, install [Inno Setup 6](https://jrsoftware.org/isinfo.php
 Useful examples: `cargo run -p engine --example run -- --list` runs the engine without the app, `--example analyze` compares presets on a recording, and `--example apo_ctl` drives the direct-mode plug-in.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
+## Code signing policy
+
+Free code signing provided by [SignPath.io](https://about.signpath.io), certificate by [SignPath Foundation](https://signpath.org).
+
+> Signing is being set up. Until it's in place, releases are unsigned.
+
+**What gets signed:** `winfx.exe`, `winfx_apo.dll` and the installer, for releases published on this repository's [Releases](../../releases) page. Every signed file is built by GitHub Actions from a tagged commit in this repository. Nothing built on a personal computer is ever signed.
+
+**Team roles:**
+
+- Committers and reviewers: [lewisdoesstuff](https://github.com/lewisdoesstuff)
+- Approvers: [lewisdoesstuff](https://github.com/lewisdoesstuff)
+
+Changes from other contributors are reviewed by a committer before they're merged. Each release is approved before it's signed.
+
+**Privacy:** WinFX doesn't transfer any information to other networked systems. It has no telemetry, crash reporting or update checks, and doesn't connect to the internet.
 
 ## License
 
