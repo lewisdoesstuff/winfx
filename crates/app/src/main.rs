@@ -86,8 +86,15 @@ fn main() {
             }
 
             let show_event = system::create_show_event();
+            // Runs whether or not the window is open (it isn't with --hidden).
+            let mut last_status = engine::Status::default();
             cx.spawn(async move |cx| loop {
                 cx.background_executor().timer(Duration::from_millis(100)).await;
+                if !preview {
+                    let status = cx.update(|cx| cx.global::<AppGlobal>().state.read(cx).engine.status());
+                    log::status_changes(&last_status, &status);
+                    last_status = status;
+                }
                 let mut actions = cx.update(|cx| {
                     cx.global::<AppGlobal>().tray.as_ref().map(|t| t.poll()).unwrap_or_default()
                 });
