@@ -118,8 +118,8 @@ impl AppState {
                 s.config.preset = Some(name.into());
                 s.set_chain(chain);
             }
-            // No virtual cable installed: start in direct mode (set up from the Output card).
-            if !s.preview && devices::find_cable_input().ok().flatten().is_none() {
+            // New installs start in direct mode (set up from the Output card).
+            if !s.preview {
                 s.set_engine_config(|c| c.direct = true);
             }
             s.save();

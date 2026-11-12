@@ -43,7 +43,7 @@ Requires Windows 10 (version 1809) or later on x64. WinFX is developed and teste
    > The installer isn't code-signed yet, so Windows SmartScreen may warn you about it. Select **More info**, then **Run anyway**.
 
 2. Open WinFX and choose your microphone under **Input**.
-3. Under **Output**, choose **Direct** and select **Set up**. Windows asks for permission once, and audio restarts briefly.
+3. Under **Output**, select **Set up**. Windows asks for permission once, and audio restarts briefly.
 4. Select **Calibrate** in the Input card. Stay quiet for 4 seconds, then speak normally for 5. WinFX sets the gain and gate thresholds to suit your mic.
 5. Pick a preset and adjust it to taste. Use **Test clip** to record yourself and hear the changes on a loop.
 
