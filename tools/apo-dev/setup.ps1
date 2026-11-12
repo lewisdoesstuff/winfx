@@ -7,9 +7,13 @@
 #  5. registers three on-demand SYSTEM tasks the user account may start:
 #     \WinFX-dev\apo-install, \WinFX-dev\apo-uninstall, \WinFX-dev\audio-restart.
 # Undo everything with teardown.ps1.
+param(
+    # The account allowed to start the tasks. Defaults to the account that runs
+    # setup; pass another SID if you elevate with a separate admin account.
+    [string]$UserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+)
 $ErrorActionPreference = 'Stop'
 
-$UserSid = '<your-user-SID>'
 $Prog = 'C:\Program Files\WinFX-dev'
 $Data = 'C:\ProgramData\WinFX-dev'
 $ts = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -22,8 +26,10 @@ foreach ($d in $Prog, "$Prog\apo", $Data, "$Data\logs", "$Data\apo-logs", "$Data
 & reg.exe export 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio' "$Data\backup\MMDevices-Audio-$ts.reg" /y | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'registry backup failed' }
 
-# 2. Helper.
-Copy-Item -Path (Join-Path $PSScriptRoot 'helper.ps1') -Destination "$Prog\helper.ps1" -Force
+# 2. Helper, pointed at this checkout's build output.
+$Source = Join-Path (Split-Path (Split-Path $PSScriptRoot)) 'target\release\winfx_apo.dll'
+$helper = (Get-Content -Raw (Join-Path $PSScriptRoot 'helper.ps1')).Replace('__WINFX_SOURCE__', $Source.Replace("'", "''"))
+Set-Content -Path "$Prog\helper.ps1" -Value $helper -Encoding UTF8 -NoNewline
 
 # 3. Folder access: the user reads logs/dumps/backups; the APO (inside audiodg, LOCAL SERVICE) writes apo-logs.
 & icacls.exe "$Data\logs" /grant "*${UserSid}:(OI)(CI)RX" | Out-Null

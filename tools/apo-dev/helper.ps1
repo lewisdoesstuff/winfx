@@ -9,7 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
-$Source = 'C:\path\to\winfx\target\release\winfx_apo.dll'
+$Source = '__WINFX_SOURCE__'  # filled in by setup.ps1: <checkout>\target\release\winfx_apo.dll
 $Dir = 'C:\Program Files\WinFX-dev\apo'
 $Dll = Join-Path $Dir 'winfx_apo.dll'
 $LogDir = 'C:\ProgramData\WinFX-dev\logs'
