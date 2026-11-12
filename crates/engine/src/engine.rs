@@ -744,11 +744,16 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
         exclusive_fallback: None,
         stream_latency_ms: 0.0,
     };
-    let monitor_info = || fake("Main Output 1/2 (Audient EVO4)", 2, 480, false);
+    let monitor_info = || fake("Speakers", 2, 480, false);
+    // Show the selected device, so the preview matches the device picker.
+    let input_info = |c: &EngineConfig| match &c.input {
+        DeviceSel::Device { name, .. } => fake(name, 1, 144, true),
+        DeviceSel::Default => fake("Microphone", 1, 144, true),
+    };
     {
         let mut s = ctl.status.lock().unwrap();
         s.state = RunState::Running;
-        s.input = Some(fake("Mic | Line | Instrument 1 (Audient EVO4)", 1, 144, true));
+        s.input = Some(input_info(&config));
         if config.direct {
             s.output = None;
             s.latency_ms = config.chain.latency_ms();
@@ -766,6 +771,7 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
             Ok(Cmd::SetChain(c)) => config.chain = c,
             Ok(Cmd::SetConfig(c)) => {
                 let mut s = ctl.status.lock().unwrap();
+                s.input = Some(input_info(&c));
                 if c.direct {
                     s.output = None;
                     s.latency_ms = c.chain.latency_ms();
