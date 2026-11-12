@@ -463,7 +463,7 @@ impl DirectLink {
                         meters.aux[i].store(m.aux[i].load());
                     }
                     tick += 1;
-                    if tick % 10 == 0 {
+                    if tick.is_multiple_of(10) {
                         let f = sh.frames.load(Relaxed);
                         if f != last_frames {
                             last_frames = f;
@@ -513,13 +513,11 @@ impl Drop for DirectLink {
 /// Not in direct mode: if the APO is installed on the mic, make it pass audio
 /// through so other apps don't get a stale chain.
 fn release_apo() {
-    if crate::shared::default_path().exists() {
-        if let Ok(m) = crate::shared::Mapping::open(&crate::shared::default_path()) {
-            if m.get().valid() {
+    if crate::shared::default_path().exists()
+        && let Ok(m) = crate::shared::Mapping::open(&crate::shared::default_path())
+            && m.get().valid() {
                 m.get().bypass.store(1, Relaxed);
             }
-        }
-    }
 }
 
 fn control_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
@@ -811,7 +809,7 @@ fn preview_loop(mut config: EngineConfig, rx: mpsc::Receiver<Cmd>, ctl: Ctl) {
                 (_, true) => 0.0,
                 (crate::chain::EffectConfig::Gate(g), _) => if talking { 0.0 } else { g.range_db },
                 (crate::chain::EffectConfig::Compressor(_), _) => if talking { 6.0 * syl * phrase } else { 0.0 },
-                (crate::chain::EffectConfig::Limiter(_), _) => if talking { 1.2 * syl * syl } else { 0.0 },
+                (crate::chain::EffectConfig::Limiter(_), _) if talking => { 1.2 * syl * syl },
                 _ => 0.0,
             };
             m.gr[i].raise(gr);

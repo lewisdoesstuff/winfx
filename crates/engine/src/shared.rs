@@ -63,7 +63,7 @@ impl Shared {
             return false;
         }
         let s = self.cfg_seq.load(Ordering::Relaxed);
-        let odd = if s % 2 == 0 { s.wrapping_add(1) } else { s };
+        let odd = if s.is_multiple_of(2) { s.wrapping_add(1) } else { s };
         self.cfg_seq.store(odd, Ordering::Relaxed);
         fence(Ordering::Release);
         unsafe { std::ptr::copy_nonoverlapping(json.as_ptr(), (*self.cfg.get()).as_mut_ptr(), json.len()) };

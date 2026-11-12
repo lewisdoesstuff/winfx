@@ -125,8 +125,8 @@ fn log_status_changes(old: &engine::Status, new: &engine::Status) {
             new.last_error.as_deref().map(|e| format!(": {e}")).unwrap_or_default()
         ));
     }
-    if old.input.as_ref().map(|i| &i.name) != new.input.as_ref().map(|i| &i.name) {
-        if let Some(i) = &new.input {
+    if old.input.as_ref().map(|i| &i.name) != new.input.as_ref().map(|i| &i.name)
+        && let Some(i) = &new.input {
             crate::log::line(&format!(
                 "input {} ({} ch, {} Hz, {}{})",
                 i.name,
@@ -136,27 +136,23 @@ fn log_status_changes(old: &engine::Status, new: &engine::Status) {
                 i.exclusive_fallback.as_deref().map(|e| format!(", exclusive failed: {e}")).unwrap_or_default()
             ));
         }
-    }
-    if old.output.as_ref().map(|o| &o.name) != new.output.as_ref().map(|o| &o.name) {
-        if let Some(o) = &new.output {
+    if old.output.as_ref().map(|o| &o.name) != new.output.as_ref().map(|o| &o.name)
+        && let Some(o) = &new.output {
             crate::log::line(&format!("output {} ({})", o.name, if o.exclusive { "exclusive" } else { "shared" }));
         }
-    }
-    if old.monitor_error != new.monitor_error {
-        if let Some(e) = &new.monitor_error {
+    if old.monitor_error != new.monitor_error
+        && let Some(e) = &new.monitor_error {
             crate::log::line(&format!("monitor: {e}"));
         }
-    }
     let d = |s: &engine::Status| s.direct.as_ref().map(|d| (d.active, d.error.clone()));
-    if d(old) != d(new) {
-        if let Some(x) = &new.direct {
+    if d(old) != d(new)
+        && let Some(x) = &new.direct {
             crate::log::line(&format!(
                 "direct mode: {}{}",
                 if x.active { "processing" } else { "not processing" },
                 x.error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default()
             ));
         }
-    }
 }
 
 fn fmt_db(v: f32) -> String {
@@ -414,11 +410,10 @@ impl MainView {
         let installed = engine::apo::installed();
         // Some drivers create new endpoints (e.g. per sample rate). Attaching
         // needs no admin, and a brand-new endpoint picks it up right away.
-        if installed && self.state.read(cx).config.engine.direct {
-            if let Some(g) = guid.as_deref().filter(|g| !engine::apo::attached(g)) {
+        if installed && self.state.read(cx).config.engine.direct
+            && let Some(g) = guid.as_deref().filter(|g| !engine::apo::attached(g)) {
                 let _ = engine::apo::attach_unelevated(g);
             }
-        }
         let v = ApoView {
             installed,
             attached: guid.as_deref().is_some_and(engine::apo::attached),
@@ -485,11 +480,10 @@ impl MainView {
     }
 
     fn turn_on_enhancements(&mut self, cx: &mut Context<Self>) {
-        if let Some(id) = self.apo.device_id.clone() {
-            if let Err(e) = engine::apo::set_enhancements(&id, true) {
+        if let Some(id) = self.apo.device_id.clone()
+            && let Err(e) = engine::apo::set_enhancements(&id, true) {
                 self.apo_error = Some(format!("Couldn't turn on audio enhancements: {}", e.message()));
             }
-        }
         self.refresh_apo(cx);
         cx.notify();
     }
@@ -602,11 +596,10 @@ impl MainView {
             let Some((kind, _)) = params::BAND_KINDS.iter().find(|(_, n)| *n == name.as_ref()) else { return };
             let band = this.eq.band;
             this.edit_chain(cx, |c| {
-                if let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = c.slots.iter_mut().find(|s| s.id == id) {
-                    if let Some(b) = eq.bands.get_mut(band) {
+                if let Some(EffectSlot { effect: EffectConfig::Eq(eq), .. }) = c.slots.iter_mut().find(|s| s.id == id)
+                    && let Some(b) = eq.bands.get_mut(band) {
                         b.kind = *kind;
                     }
-                }
             });
             // The gain slider appears/disappears with the type.
             this.select_band(band, window, cx);
@@ -668,11 +661,10 @@ impl MainView {
             prompt: Some("Import".into()),
         });
         cx.spawn_in(window, async move |this, cx| {
-            if let Ok(Ok(Some(paths))) = rx.await {
-                if let Some(path) = paths.into_iter().next() {
+            if let Ok(Ok(Some(paths))) = rx.await
+                && let Some(path) = paths.into_iter().next() {
                     let _ = this.update_in(cx, |this, window, cx| this.import_path(&path, window, cx));
                 }
-            }
         })
         .detach();
     }
@@ -704,11 +696,10 @@ impl MainView {
         });
         self.eq.band = 0;
         self.rebuild_cards(window, cx);
-        if let Some(id) = self.eq.slot {
-            if let Some(c) = self.cards.iter_mut().find(|c| c.id == id) {
+        if let Some(id) = self.eq.slot
+            && let Some(c) = self.cards.iter_mut().find(|c| c.id == id) {
                 c.expanded = true;
             }
-        }
     }
 
     fn eq_mouse_down(&mut self, pos: gpui::Point<Pixels>, window: &mut Window, cx: &mut Context<Self>) {
@@ -1448,8 +1439,8 @@ impl MainView {
                             prompt: Some("Choose".into()),
                         });
                         cx.spawn_in(window, async move |this, cx| {
-                            if let Ok(Ok(Some(paths))) = rx.await {
-                                if let Some(path) = paths.into_iter().next() {
+                            if let Ok(Ok(Some(paths))) = rx.await
+                                && let Some(path) = paths.into_iter().next() {
                                     let _ = this.update(cx, |this, cx| {
                                         this.edit_chain(cx, |c| {
                                             if let Some(EffectSlot { effect: EffectConfig::Convolver(cv), .. }) =
@@ -1460,7 +1451,6 @@ impl MainView {
                                         })
                                     });
                                 }
-                            }
                         })
                         .detach();
                     })),
@@ -2069,7 +2059,7 @@ impl MainView {
                             cx.notify();
                         },
                     )))
-                    .children(save_as.map(|m| anchor_below(m))),
+                    .children(save_as.map(anchor_below)),
             )
             .child(
                 fluent::button("import", cx)
@@ -2098,7 +2088,7 @@ impl MainView {
                                 cx.notify();
                             })),
                     )
-                    .children(add_menu.map(|m| anchor_below(m))),
+                    .children(add_menu.map(anchor_below)),
             )
     }
 

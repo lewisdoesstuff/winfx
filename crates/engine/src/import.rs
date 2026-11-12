@@ -41,12 +41,11 @@ pub enum Imported {
 pub fn import(text: &str) -> Result<Imported, String> {
     let t = text.trim_start_matches('\u{feff}').trim_start();
     // A WinFX preset (e.g. shared from another machine) loads as-is.
-    if t.starts_with('{') {
-        if let Ok(chain) = serde_json::from_str::<ChainConfig>(t) {
+    if t.starts_with('{')
+        && let Ok(chain) = serde_json::from_str::<ChainConfig>(t) {
             let report = ImportReport { mapped: vec![format!("{} effects (WinFX preset)", chain.slots.len())], ..Default::default() };
             return Ok(Imported::Chain(chain, report));
         }
-    }
     if t.starts_with('{') {
         let (c, r) = from_easyeffects(t)?;
         Ok(Imported::Chain(c, r))

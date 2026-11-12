@@ -86,9 +86,9 @@ fn watch() {
                     Err(e) => log::line(&format!("can't map {}: {e}", default_path().display())),
                 }
             }
-            if let Some(sh) = shared() {
-                if sh.valid() {
-                    if let Some((s, bytes)) = sh.read_config(seq) {
+            if let Some(sh) = shared()
+                && sh.valid()
+                    && let Some((s, bytes)) = sh.read_config(seq) {
                         seq = s;
                         match serde_json::from_slice::<ChainConfig>(&bytes) {
                             Ok(c) => {
@@ -98,8 +98,6 @@ fn watch() {
                             Err(e) => log::line(&format!("config {s}: bad JSON ({e})")),
                         }
                     }
-                }
-            }
             let Ok(mut reg) = REGISTRY.lock() else { return };
             reg.retain(|i| {
                 // Collect the old chains RT handed back.
@@ -111,8 +109,8 @@ fn watch() {
                     i.drain();
                     return false;
                 }
-                if let Some(c) = &cfg {
-                    if i.applied.load(Relaxed) != seq {
+                if let Some(c) = &cfg
+                    && i.applied.load(Relaxed) != seq {
                         let chain = Box::into_raw(Box::new(Chain::build(c, f32::from_bits(i.rate.load(Relaxed)))));
                         let old = i.pending.swap(chain, AcqRel);
                         if !old.is_null() {
@@ -123,7 +121,6 @@ fn watch() {
                             sh.applied_seq.store(seq, Release);
                         }
                     }
-                }
                 true
             });
             if let Some(sh) = shared() {

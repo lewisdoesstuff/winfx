@@ -107,11 +107,10 @@ fn main() {
 }
 
 fn open_main_window(cx: &mut App) {
-    if let Some(h) = cx.global::<AppGlobal>().window {
-        if h.update(cx, |_, window, _| window.activate_window()).is_ok() {
+    if let Some(h) = cx.global::<AppGlobal>().window
+        && h.update(cx, |_, window, _| window.activate_window()).is_ok() {
             return;
         }
-    }
     let state = cx.global::<AppGlobal>().state.clone();
     let preview = cx.global::<AppGlobal>().preview;
     // Dev aid: WINFX_OFFSCREEN=1 opens the real app off-screen without focus, for screenshots.

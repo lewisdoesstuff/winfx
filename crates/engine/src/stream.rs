@@ -217,8 +217,8 @@ fn open(device: &Device, dir: Direction) -> Result<Opened> {
             .unwrap_or(0.0),
     };
 
-    if is_f32_48k {
-        if let Ok(p) = client.get_shared_mode_engine_period(&mix) {
+    if is_f32_48k
+        && let Ok(p) = client.get_shared_mode_engine_period(&mix) {
             if client
                 .initialize_shared_audio_stream(&mix, TimingMode::Events, p.min)
                 .is_ok()
@@ -236,7 +236,6 @@ fn open(device: &Device, dir: Direction) -> Result<Opened> {
             // A failed Initialize leaves the client unusable; start over.
             client = device.get_iaudioclient()?;
         }
-    }
 
     let fmt = WaveFormat::new(32, 32, SampleType::Float, SAMPLE_RATE as usize, channels, None);
     let (def_hns, min_hns) = client.get_device_period()?;
@@ -383,10 +382,7 @@ fn capture(mut a: CaptureArgs, ready: &mut dyn FnMut(StreamInfo)) -> Result<()> 
         }
 
         loop {
-            match cap.get_next_packet_size()? {
-                Some(0) => break,
-                _ => {}
-            }
+            if let Some(0) = cap.get_next_packet_size()? { break }
             let (n, info) = cap.read_from_device(&mut bytes)?;
             let n = n as usize;
             if n == 0 {
@@ -653,7 +649,7 @@ pub(crate) fn listen_for_clicks(device_id: &str, session: &Session, trials: usiz
                 }
                 if !heard_anything {
                     heard_anything = bytes[..n as usize * block_align]
-                        .chunks_exact(4)
+                        .as_chunks::<4>().0.iter()
                         .any(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]) != 0.0);
                 }
                 let injected = session.inject_qpc.load(Relaxed);

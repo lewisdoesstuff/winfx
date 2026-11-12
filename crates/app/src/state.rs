@@ -104,14 +104,13 @@ impl AppState {
         s.refresh_devices();
         s.refresh_presets();
 
-        if first_run || config.engine.input == DeviceSel::Default {
-            if let Some(mic) = s.guess_mic() {
+        if (first_run || config.engine.input == DeviceSel::Default)
+            && let Some(mic) = s.guess_mic() {
                 config.engine.input = DeviceSel::device(&mic);
                 s.config = config;
                 s.engine.set_config(s.config.engine.clone());
                 s.save();
             }
-        }
         if first_run {
             let _ = std::fs::create_dir_all(presets_dir());
             if s.presets.is_empty() {

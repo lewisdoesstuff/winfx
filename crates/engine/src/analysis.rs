@@ -40,7 +40,7 @@ pub fn render(chain: &ChainConfig, input: &[f32]) -> Rendered {
     let shift = (chain.latency_ms() * 0.001 * sr).round() as usize;
     if shift > 0 && shift < output.len() {
         output.drain(..shift);
-        output.extend(std::iter::repeat(0.0).take(shift));
+        output.extend(std::iter::repeat_n(0.0, shift));
     }
     Rendered { output, gr: chain.slots.iter().zip(gr).map(|(s, g)| (s.effect.name().to_owned(), g)).collect() }
 }

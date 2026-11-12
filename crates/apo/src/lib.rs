@@ -11,6 +11,9 @@
 //! C:\ProgramData\WinFX\apo.log.
 
 #![allow(non_snake_case)]
+// The linker would like DllGetClassObject/DllCanUnloadNow marked PRIVATE (a .def
+// file nicety); harmless, so keep the build output clean.
+#![allow(linker_messages)]
 
 mod com;
 mod host;
@@ -240,7 +243,7 @@ impl Core {
         }
         // Too big for the scratch buffer (never expected): pass through.
         if n > rt.scratch.len() {
-            if !silent && src != dst as *const f32 {
+            if !silent && !std::ptr::eq(src, dst) {
                 unsafe { std::ptr::copy_nonoverlapping(src, dst, n * ch) };
             }
             return;
@@ -320,7 +323,7 @@ impl Core {
                 // Untouched pass-through.
                 if silent {
                     unsafe { std::ptr::write_bytes(dst, 0, n * ch) };
-                } else if src != dst as *const f32 {
+                } else if !std::ptr::eq(src, dst) {
                     unsafe { std::ptr::copy_nonoverlapping(src, dst, n * ch) };
                 }
             }
