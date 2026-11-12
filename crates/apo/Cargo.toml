@@ -21,3 +21,6 @@ windows = { workspace = true, features = [
     "Win32_System_Variant",
     "Win32_UI_Shell_PropertiesSystem",
 ] }
+
+[build-dependencies]
+winresource = "0.1"
