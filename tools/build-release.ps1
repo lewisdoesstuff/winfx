@@ -3,6 +3,10 @@
 # Output: dist\WinFX-<version>-setup.exe
 # Needs: Rust (MSVC), cargo-about (cargo install cargo-about --features cli),
 #        Inno Setup 6 (winget install JRSoftware.InnoSetup).
+param(
+    # CI already ran the tests in the dev profile.
+    [switch]$SkipTests
+)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 Set-Location $root
@@ -11,8 +15,10 @@ $env:Path = "$env:USERPROFILE\.cargo\bin;$env:Path"
 $version = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
 Write-Host "WinFX $version"
 
-cargo test --workspace --release --quiet
-if ($LASTEXITCODE -ne 0) { throw 'tests failed' }
+if (-not $SkipTests) {
+    cargo test --workspace --release --quiet
+    if ($LASTEXITCODE -ne 0) { throw 'tests failed' }
+}
 cargo build --workspace --release --quiet
 if ($LASTEXITCODE -ne 0) { throw 'build failed' }
 
