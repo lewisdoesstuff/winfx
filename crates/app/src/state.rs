@@ -115,10 +115,20 @@ impl AppState {
         if first_run {
             let _ = std::fs::create_dir_all(presets_dir());
             if s.presets.is_empty() {
-                s.save_preset("SM57 voice");
-                s.config.preset = Some("SM57 voice".into());
-                s.save();
+                let starters = ChainConfig::starters();
+                for (name, chain) in &starters {
+                    s.config.engine.chain = chain.clone();
+                    s.save_preset(name);
+                }
+                let (name, chain) = starters.into_iter().next().unwrap();
+                s.config.preset = Some(name.into());
+                s.set_chain(chain);
             }
+            // No virtual cable installed: start in direct mode (set up from the Output card).
+            if !s.preview && devices::find_cable_input().ok().flatten().is_none() {
+                s.set_engine_config(|c| c.direct = true);
+            }
+            s.save();
         }
         s
     }

@@ -172,7 +172,7 @@ pub struct ChainConfig {
 }
 
 impl ChainConfig {
-    /// The SM57 → "SM7B-ish" voice chain from the handoff.
+    /// A mic-specific example chain (SM57 shaped toward an SM7B); used by tests.
     pub fn sm57_voice() -> Self {
         use FilterKind::*;
         let band = |kind, freq_hz, gain_db, q| EqBand { enabled: true, kind, freq_hz, gain_db, q, slope: 1 };
@@ -202,6 +202,73 @@ impl ChainConfig {
         }
     }
 
+    /// Generic starting points for a spoken voice, installed on first run.
+    /// Thresholds assume speech around -20 dBFS; "Calibrate" fits them to the mic.
+    pub fn starters() -> Vec<(&'static str, ChainConfig)> {
+        use crate::dsp::{AutogainParams, DeesserParams, ExpanderParams};
+        use FilterKind::*;
+        let band = |kind, freq_hz, gain_db, q| EqBand { enabled: true, kind, freq_hz, gain_db, q, slope: 1 };
+        let hp = |freq_hz, slope| EffectConfig::Filter(FilterParams { kind: HighPass, freq_hz, q: 0.707, slope });
+        let build = |effects: Vec<EffectConfig>| ChainConfig {
+            slots: effects
+                .into_iter()
+                .enumerate()
+                .map(|(i, effect)| EffectSlot { id: i as u32 + 1, bypass: false, effect })
+                .collect(),
+        };
+        vec![
+            (
+                "Voice",
+                build(vec![
+                    hp(80.0, 1),
+                    EffectConfig::Gain(GainParams { gain_db: 0.0 }),
+                    EffectConfig::Expander(ExpanderParams { threshold_db: -50.0, ratio: 2.0, range_db: 15.0, ..Default::default() }),
+                    EffectConfig::Compressor(CompressorParams {
+                        threshold_db: -24.0,
+                        ratio: 3.0,
+                        attack_ms: 5.0,
+                        release_ms: 120.0,
+                        knee_db: 6.0,
+                        rms_ms: 10.0,
+                        makeup_db: 3.0,
+                    }),
+                    EffectConfig::Deesser(DeesserParams::default()),
+                    EffectConfig::Limiter(LimiterParams::default()),
+                ]),
+            ),
+            (
+                "Voice (broadcast)",
+                build(vec![
+                    hp(80.0, 2),
+                    EffectConfig::Gain(GainParams { gain_db: 0.0 }),
+                    EffectConfig::Expander(ExpanderParams { threshold_db: -45.0, ratio: 4.0, range_db: 25.0, ..Default::default() }),
+                    EffectConfig::Eq(EqParams {
+                        bands: vec![
+                            band(LowShelf, 120.0, 2.0, 0.707),
+                            band(Peak, 300.0, -2.5, 1.0),
+                            band(Peak, 3000.0, 2.0, 1.0),
+                            band(HighShelf, 10000.0, 1.5, 0.707),
+                        ],
+                        gain_db: 0.0,
+                    }),
+                    EffectConfig::Compressor(CompressorParams {
+                        threshold_db: -26.0,
+                        ratio: 4.0,
+                        attack_ms: 6.0,
+                        release_ms: 140.0,
+                        knee_db: 8.0,
+                        rms_ms: 10.0,
+                        makeup_db: 5.0,
+                    }),
+                    EffectConfig::Deesser(DeesserParams::default()),
+                    EffectConfig::Autogain(AutogainParams::default()),
+                    EffectConfig::Limiter(LimiterParams::default()),
+                ]),
+            ),
+            ("Noise gate", build(vec![hp(80.0, 1), EffectConfig::Gate(GateParams::default())])),
+        ]
+    }
+
     /// Delay the chain itself adds, in ms (limiter look-ahead; the filters are minimum-phase).
     pub fn latency_ms(&self) -> f32 {
         self.slots
@@ -225,7 +292,7 @@ impl ChainConfig {
 
 impl Default for ChainConfig {
     fn default() -> Self {
-        Self::sm57_voice()
+        Self::starters().swap_remove(0).1
     }
 }
 
@@ -482,6 +549,19 @@ impl Chain {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn starters_roundtrip_and_build() {
+        for (name, cfg) in ChainConfig::starters() {
+            let json = serde_json::to_string(&cfg).unwrap();
+            let back: ChainConfig = serde_json::from_str(&json).unwrap();
+            assert_eq!(back.slots.len(), cfg.slots.len(), "{name}");
+            let mut c = Chain::build(&back, 48000.0);
+            let mut buf = vec![0.1f32; 480];
+            c.process(&mut buf, &Meters::default());
+            assert!(buf.iter().all(|v| v.is_finite()), "{name}");
+        }
+    }
 
     #[test]
     fn preset_round_trips_through_json() {
