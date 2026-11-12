@@ -1,0 +1,95 @@
+@import "tailwindcss";
+
+/* Fonts: system stacks only. Nothing is fetched from a third party. */
+@theme {
+  --font-sans: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+}
+
+/* Colour roles. :root sets the variables; utilities like bg-page read them. */
+@theme inline {
+  --color-page: var(--page);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --color-accent: var(--accent);
+  --color-on-accent: var(--on-accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-note: var(--note);
+  --color-note-line: var(--note-line);
+}
+
+:root {
+  --page: #f3f3f3;
+  --surface: rgb(255 255 255 / 0.72);
+  --raised: #ffffff;
+  --ink: #1b1b1b;
+  --muted: #5a5a5a;
+  --line: rgb(0 0 0 / 0.09);
+  --accent: #005fb8;
+  --on-accent: #ffffff;
+  --accent-soft: #e3effb;
+  --note: #fff4ce;
+  --note-line: #ecd68a;
+  --glow-1: rgb(0 120 212 / 0.2);
+  --glow-2: rgb(136 108 228 / 0.14);
+  --glow-3: rgb(0 183 195 / 0.12);
+}
+
+
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --page: #202020;
+    --surface: rgb(255 255 255 / 0.05);
+    --raised: #2c2c2c;
+    --ink: #ffffff;
+    --muted: #c8c8c8;
+    --line: rgb(255 255 255 / 0.1);
+    --accent: #60cdff;
+    --on-accent: #00111a;
+    --accent-soft: rgb(96 205 255 / 0.13);
+      --note: #433519;
+    --note-line: #6b5521;
+    --glow-1: rgb(0 120 212 / 0.3);
+    --glow-2: rgb(136 108 228 / 0.18);
+    --glow-3: rgb(0 183 195 / 0.12);
+  }
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  scroll-padding-top: 5rem;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  html {
+    scroll-behavior: smooth;
+  }
+}
+
+body {
+  margin: 0;
+  overflow-x: clip;
+}
+
+:where(a, button):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+/* On a filled accent button the ring needs to stand off from the fill. */
+.on-fill:focus-visible {
+  outline-color: var(--ink);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+  }
+}
