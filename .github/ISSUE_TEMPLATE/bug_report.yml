@@ -1,0 +1,49 @@
+name: Bug report
+description: Something doesn't work, sounds wrong, or crashes.
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Select ...
+        2. ...
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Output mode
+      options:
+        - Direct
+        - Virtual cable
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Microphone or audio interface
+      placeholder: e.g. a USB mic, or an interface and the mic plugged into it
+  - type: input
+    id: versions
+    attributes:
+      label: WinFX and Windows versions
+      description: The WinFX version is in Settings > Apps > Installed apps. For Windows, run `winver`.
+      placeholder: WinFX 0.1.0, Windows 11 24H2
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Drag the log files in, or paste the last few dozen lines:
+        - `%LOCALAPPDATA%\winfx\winfx.log` (the app)
+        - `%ProgramData%\WinFX\apo.log` (direct mode)
