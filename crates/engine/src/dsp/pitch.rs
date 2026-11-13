@@ -319,14 +319,14 @@ impl Autotune {
         let w = YIN_LEN;
         let mut running = 0.0;
         self.diff[0] = 1.0;
-        for tau in 1..=tmax {
+        for (tau, out) in self.diff.iter_mut().enumerate().take(tmax + 1).skip(1) {
             let mut d = 0.0;
             for j in 0..w {
                 let a = at(j) - at(j + tau);
                 d += a * a;
             }
             running += d;
-            self.diff[tau] = if running > 0.0 { d * tau as f32 / running } else { 1.0 };
+            *out = if running > 0.0 { d * tau as f32 / running } else { 1.0 };
         }
         let mut tau = tmin.max(2);
         while tau < tmax {
