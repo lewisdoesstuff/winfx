@@ -257,7 +257,6 @@ const nav = [
         </span>
         <a :href="links.source" class="underline underline-offset-4 hover:text-ink">Source</a>
         <a :href="links.license" class="underline underline-offset-4 hover:text-ink">MIT license</a>
-        <a :href="links.signing" class="underline underline-offset-4 hover:text-ink">Code signing policy</a>
         <a :href="links.troubleshooting" class="underline underline-offset-4 hover:text-ink">Troubleshooting</a>
       </div>
       <p class="mt-4">

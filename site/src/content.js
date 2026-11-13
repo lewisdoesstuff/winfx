@@ -7,7 +7,6 @@ export const links = {
   source: repo,
   troubleshooting: repo + '#troubleshooting',
   outputModes: repo + '#output-modes',
-  signing: repo + '#code-signing-policy',
   license: repo + '/blob/main/LICENSE',
   easyEffects: 'https://github.com/wwmm/easyeffects',
 }
