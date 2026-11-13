@@ -48,19 +48,31 @@ pub fn set_autostart(on: bool) -> bool {
     }
 }
 
+/// A second launch sets this to ask the running instance to show its window.
 const SHOW_EVENT: PCWSTR = w!("Local\\WinFX-show");
+/// The installer and uninstaller set this to ask the running instance to quit.
+/// The name is also in installer\winfx.iss.
+const QUIT_EVENT: PCWSTR = w!("Local\\WinFX-quit");
 
-/// Auto-reset event a second launch sets to ask this instance to show its window.
-pub struct ShowEvent(HANDLE);
+/// Auto-reset event another process sets to signal this instance.
+pub struct Signal(HANDLE);
 
-impl ShowEvent {
+impl Signal {
     pub fn take(&self) -> bool {
         unsafe { WaitForSingleObject(self.0, 0) == WAIT_OBJECT_0 }
     }
 }
 
-pub fn create_show_event() -> Option<ShowEvent> {
-    unsafe { CreateEventW(None, false, false, SHOW_EVENT).ok().map(ShowEvent) }
+fn create_signal(name: PCWSTR) -> Option<Signal> {
+    unsafe { CreateEventW(None, false, false, name).ok().map(Signal) }
+}
+
+pub fn create_show_event() -> Option<Signal> {
+    create_signal(SHOW_EVENT)
+}
+
+pub fn create_quit_event() -> Option<Signal> {
+    create_signal(QUIT_EVENT)
 }
 
 pub fn signal_show_existing() {

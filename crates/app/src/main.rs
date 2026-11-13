@@ -84,6 +84,7 @@ fn main() {
             }
 
             let show_event = system::create_show_event();
+            let quit_event = if preview { None } else { system::create_quit_event() };
             // Runs whether or not the window is open (it isn't with --hidden).
             let mut last_status = engine::Status::default();
             cx.spawn(async move |cx| {
@@ -98,6 +99,9 @@ fn main() {
                         cx.update(|cx| cx.global::<AppGlobal>().tray.as_ref().map(|t| t.poll()).unwrap_or_default());
                     if show_event.as_ref().is_some_and(|e| e.take()) {
                         actions.push(TrayAction::Show);
+                    }
+                    if quit_event.as_ref().is_some_and(|e| e.take()) {
+                        actions.push(TrayAction::Quit);
                     }
                     for a in actions {
                         cx.update(|cx| match a {

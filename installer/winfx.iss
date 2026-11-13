@@ -29,8 +29,9 @@ UninstallDisplayName=WinFX
 WizardStyle=modern
 Compression=lzma2/max
 SolidCompression=yes
-; The app's single-instance mutex: setup asks to close a running WinFX.
-AppMutex=WinFX-single-instance
+; No AppMutex: in a silent install (winget) its "WinFX is running" prompt
+; answers Cancel. PrepareToInstall closes WinFX instead, and a silent install
+; starts it again afterwards.
 CloseApplications=yes
 LicenseFile=..\LICENSE
 
@@ -50,6 +51,8 @@ Name: "{autodesktop}\WinFX"; Filename: "{app}\winfx.exe"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\winfx.exe"; Description: "{cm:LaunchProgram,WinFX}"; Flags: nowait postinstall skipifsilent
+; A silent install or upgrade (winget) puts back a WinFX it closed.
+Filename: "{app}\winfx.exe"; Parameters: "--hidden"; Flags: nowait; Check: RestartHidden
 
 [Registry]
 ; Start at login is set from inside WinFX; only clean it up on uninstall.
@@ -60,7 +63,81 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueName: 
 Filename: "{app}\winfx.exe"; Parameters: "--apo-remove"; Verb: "runas"; Flags: shellexec waituntilterminated runhidden; Check: ApoInstalled; RunOnceId: "RemoveApo"
 
 [Code]
+const
+  // Both names are in crates\app\src\main.rs and system.rs.
+  AppMutexName = 'WinFX-single-instance';
+  QuitEventName = 'Local\WinFX-quit';
+  EVENT_MODIFY_STATE = $0002;
+
+var
+  WinFXWasRunning: Boolean;
+
+function OpenEvent(dwDesiredAccess: DWORD; bInheritHandle: BOOL; lpName: String): THandle;
+  external 'OpenEventW@kernel32.dll stdcall';
+function SetEvent(hEvent: THandle): BOOL;
+  external 'SetEvent@kernel32.dll stdcall';
+function CloseHandle(hObject: THandle): BOOL;
+  external 'CloseHandle@kernel32.dll stdcall';
+
 function ApoInstalled: Boolean;
 begin
   Result := RegKeyExists(HKLM64, 'SOFTWARE\Classes\CLSID\{77069DD4-922E-4A92-8B31-EA606FEDCE4B}');
+end;
+
+function WaitForWinFXExit(TimeoutMs: Integer): Boolean;
+var
+  Waited: Integer;
+begin
+  Waited := 0;
+  while CheckForMutexes(AppMutexName) and (Waited < TimeoutMs) do
+  begin
+    Sleep(100);
+    Waited := Waited + 100;
+  end;
+  Result := not CheckForMutexes(AppMutexName);
+end;
+
+// Ask a running WinFX to quit (it saves its settings first). 0.1.0 has no
+// quit event, and closing its window only hides it in the tray, so end it if
+// asking doesn't work. Direct mode keeps running either way.
+function CloseWinFX: Boolean;
+var
+  Event: THandle;
+  ResultCode: Integer;
+begin
+  Result := True;
+  if not CheckForMutexes(AppMutexName) then
+    Exit;
+  WinFXWasRunning := True;
+  Event := OpenEvent(EVENT_MODIFY_STATE, False, QuitEventName);
+  if Event <> 0 then
+  begin
+    SetEvent(Event);
+    CloseHandle(Event);
+    if WaitForWinFXExit(10000) then
+      Exit;
+  end;
+  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM winfx.exe /FI "USERNAME eq ' + GetUserNameString + '"',
+    '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Result := WaitForWinFXExit(5000);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  if CloseWinFX then
+    Result := ''
+  else
+    Result := 'WinFX is still running. Quit it from its tray icon, then run Setup again.';
+end;
+
+function RestartHidden: Boolean;
+begin
+  Result := WinFXWasRunning and WizardSilent;
+end;
+
+// After the "are you sure" prompt, so cancelling leaves WinFX running.
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    CloseWinFX;
 end;
