@@ -2,7 +2,7 @@
 ; Build with tools\build-release.ps1, which passes the version and paths.
 
 #ifndef AppVersion
-  #define AppVersion "0.1.0"
+  #define AppVersion "0.1.1"
 #endif
 #ifndef SourceDir
   #define SourceDir "..\target\release"

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.1 (2026-11-13)
 
 - Installing or upgrading while WinFX is running now works in silent installs (winget). Setup asks WinFX to quit, instead of showing a prompt that a silent install answers with Cancel, and starts it again in the tray afterwards.
 
